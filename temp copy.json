@@ -1,0 +1,983 @@
+{
+    "Tournament": {
+        "EventYear": 2023,
+        "EventId": "2843",
+        "EventDisplayName": "Adelaide 1",
+        "TournamentImage": null,
+        "TournamentLogo": "/-/media/alias/event-sponsor-images/2843/2023",
+        "TournamentWhiteLogo": "/-/media/alias/event-sponsor-white-images/2843/2023",
+        "EventType": "250",
+        "StartDate": "2023-01-01T00:00:00",
+        "EndDate": "2023-01-08T00:00:00",
+        "Court": "Hard",
+        "Singles": 32,
+        "Doubles": 24,
+        "TournamentName": "Adelaide International 1",
+        "PrizeMoney": 642735,
+        "CurrencySymbol": "$",
+        "TournamentUrl": "/en/tournaments/adelaide/2843/overview",
+        "TournamentCity": "Adelaide"
+    },
+    "Match": {
+        "TeamTieResults": null,
+        "MatchId": "MS001",
+        "IsDoubles": false,
+        "RoundName": null,
+        "Round": {
+            "RoundId": 7,
+            "ShortName": "F",
+            "LongName": "Finals",
+            "ScRoundName": null
+        },
+        "CourtName": null,
+        "MatchTimeTotal": "03:09:00",
+        "MatchTime": "03:09:00",
+        "ExtendedMessage": null,
+        "Message": null,
+        "MatchStatus": "F",
+        "Status": "F",
+        "ServerTeam": -1,
+        "LastServer": null,
+        "WinningPlayerId": "D643",
+        "Winner": "D643",
+        "DateSeq": null,
+        "IsQualifier": null,
+        "IsWatchLive": null,
+        "NumberOfSets": 3,
+        "ScoringSystem": null,
+        "Reason": null,
+        "PlayerTeam": {
+            "Player": {
+                "PlayerId": "D643",
+                "PlayerCountry": "SRB",
+                "PlayerFirstName": "Novak",
+                "PlayerLastName": "Djokovic",
+                "PlayerCountryName": "Serbia",
+                "PlayerScRelativeUrlPlayerProfile": "/en/players/novak-djokovic/d643/overview"
+            },
+            "Partner": null,
+            "GameScore": null,
+            "SetScores": [
+                {
+                    "SetNumber": 0,
+                    "SetScore": null,
+                    "TieBreakScore": null,
+                    "Stats": {
+                        "Time": "03:09:00",
+                        "ServiceStats": {
+                            "ServeRating": {
+                                "Number": 313,
+                                "IsStatBetter": null
+                            },
+                            "ServeRatingLink": "/en/stats/leaderboard?page=serve",
+                            "DoubleFaults": {
+                                "Number": 4,
+                                "IsStatBetter": false
+                            },
+                            "Aces": {
+                                "Number": 7,
+                                "IsStatBetter": false
+                            },
+                            "FirstServe": {
+                                "Percent": 63,
+                                "Dividend": 62,
+                                "Divisor": 99,
+                                "IsStatBetter": true
+                            },
+                            "FirstServePointsWon": {
+                                "Percent": 85,
+                                "Dividend": 53,
+                                "Divisor": 62,
+                                "IsStatBetter": true
+                            },
+                            "SecondServePointsWon": {
+                                "Percent": 68,
+                                "Dividend": 25,
+                                "Divisor": 37,
+                                "IsStatBetter": true
+                            },
+                            "BreakPointsSaved": {
+                                "Percent": 50,
+                                "Dividend": 1,
+                                "Divisor": 2,
+                                "IsStatBetter": false
+                            },
+                            "ServiceGamesPlayed": {
+                                "Number": 17,
+                                "IsStatBetter": false
+                            }
+                        },
+                        "ReturnStats": {
+                            "ReturnRating": {
+                                "Number": 111,
+                                "IsStatBetter": null
+                            },
+                            "ReturnRatingLink": "/en/stats/leaderboard?page=return",
+                            "FirstServeReturnPointsWon": {
+                                "Percent": 22,
+                                "Dividend": 17,
+                                "Divisor": 76,
+                                "IsStatBetter": true
+                            },
+                            "SecondServeReturnPointsWon": {
+                                "Percent": 49,
+                                "Dividend": 26,
+                                "Divisor": 53,
+                                "IsStatBetter": true
+                            },
+                            "BreakPointsConverted": {
+                                "Percent": 29,
+                                "Dividend": 2,
+                                "Divisor": 7,
+                                "IsStatBetter": true
+                            },
+                            "ReturnGamesPlayed": {
+                                "Number": 17,
+                                "IsStatBetter": false
+                            }
+                        },
+                        "PointStats": {
+                            "TotalServicePointsWon": {
+                                "Percent": 79,
+                                "Dividend": 78,
+                                "Divisor": 99,
+                                "IsStatBetter": true
+                            },
+                            "TotalReturnPointsWon": {
+                                "Percent": 33,
+                                "Dividend": 43,
+                                "Divisor": 129,
+                                "IsStatBetter": true
+                            },
+                            "TotalPointsWon": {
+                                "Percent": 53,
+                                "Dividend": 121,
+                                "Divisor": 228,
+                                "IsStatBetter": true
+                            }
+                        }
+                    }
+                },
+                {
+                    "SetNumber": 1,
+                    "SetScore": "6",
+                    "TieBreakScore": 8,
+                    "Stats": null
+                },
+                {
+                    "SetNumber": 2,
+                    "SetScore": "7",
+                    "TieBreakScore": 7,
+                    "Stats": null
+                },
+                {
+                    "SetNumber": 3,
+                    "SetScore": "6",
+                    "TieBreakScore": null,
+                    "Stats": null
+                }
+            ],
+            "YearToDateStats": {
+                "ServiceRecordStats": {
+                    "DoubleFaults": {
+                        "Number": 17,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsFaced": {
+                        "Number": 29,
+                        "IsStatBetter": null
+                    },
+                    "ServiceGamesWon": {
+                        "Percent": 88
+                    },
+                    "TotalServicePointsWon": {
+                        "Percent": 70,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "Aces": {
+                        "Number": 43,
+                        "IsStatBetter": null
+                    },
+                    "FirstServe": {
+                        "Percent": 64,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "FirstServePointsWon": {
+                        "Percent": 76,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "SecondServePointsWon": {
+                        "Percent": 58,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsSaved": {
+                        "Percent": 67,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "ServiceGamesPlayed": {
+                        "Number": 82,
+                        "IsStatBetter": null
+                    }
+                },
+                "ReturnRecordStats": {
+                    "BreakPointOpportunities": {
+                        "Number": 55,
+                        "IsStatBetter": null
+                    },
+                    "ReturnGamesWon": {
+                        "Percent": 29
+                    },
+                    "ReturnPointsWon": {
+                        "Percent": 41
+                    },
+                    "TotalPointsWon": {
+                        "Percent": 55,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "FirstServeReturnPointsWon": {
+                        "Percent": 33,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "SecondServeReturnPointsWon": {
+                        "Percent": 54,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsConverted": {
+                        "Percent": 42,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "ReturnGamesPlayed": {
+                        "Number": 80,
+                        "IsStatBetter": null
+                    }
+                }
+            }
+        },
+        "PlayerTeam1": {
+            "PlayerId": "D643",
+            "PartnerId": null,
+            "PlayerFirstName": "N.",
+            "PlayerFirstNameFull": "Novak",
+            "PlayerLastName": "Djokovic",
+            "PlayerCountryCode": "SRB",
+            "PlayerScRelativeUrlPlayerProfile": "/en/players/novak-djokovic/d643/overview",
+            "PlayerScRelativeUrlPlayerCountryFlag": "/en/~/media/images/flags/srb.svg",
+            "PlayerRankingUrl": "/en/players/novak-djokovic/d643/rankings-breakdown?team=singles",
+            "PlayerHeadshotImageUrl": null,
+            "PlayerGladiatorImageUrl": null,
+            "PartnerFirstName": "",
+            "PartnerFirstNameFull": null,
+            "PartnerLastName": null,
+            "PartnerCountryCode": null,
+            "PartnerScRelativeUrlPlayerProfile": null,
+            "PartnerScRelativeUrlPlayerCountryFlag": null,
+            "PartnerHeadshotImageUrl": null,
+            "PartnerGladiatorImageUrl": null,
+            "SeedPlayerTeam": null,
+            "EntryStatusPlayerTeam": null,
+            "GamePointsPlayerTeam": null,
+            "Sets": [
+                {
+                    "SetNumber": 0,
+                    "SetScore": null,
+                    "TieBreakScore": null,
+                    "Stats": {
+                        "Time": "03:09:00",
+                        "ServiceStats": {
+                            "ServeRating": {
+                                "Number": 313,
+                                "IsStatBetter": null
+                            },
+                            "ServeRatingLink": "/en/stats/leaderboard?page=serve",
+                            "DoubleFaults": {
+                                "Number": 4,
+                                "IsStatBetter": false
+                            },
+                            "Aces": {
+                                "Number": 7,
+                                "IsStatBetter": false
+                            },
+                            "FirstServe": {
+                                "Percent": 63,
+                                "Dividend": 62,
+                                "Divisor": 99,
+                                "IsStatBetter": true
+                            },
+                            "FirstServePointsWon": {
+                                "Percent": 85,
+                                "Dividend": 53,
+                                "Divisor": 62,
+                                "IsStatBetter": true
+                            },
+                            "SecondServePointsWon": {
+                                "Percent": 68,
+                                "Dividend": 25,
+                                "Divisor": 37,
+                                "IsStatBetter": true
+                            },
+                            "BreakPointsSaved": {
+                                "Percent": 50,
+                                "Dividend": 1,
+                                "Divisor": 2,
+                                "IsStatBetter": false
+                            },
+                            "ServiceGamesPlayed": {
+                                "Number": 17,
+                                "IsStatBetter": false
+                            }
+                        },
+                        "ReturnStats": {
+                            "ReturnRating": {
+                                "Number": 111,
+                                "IsStatBetter": null
+                            },
+                            "ReturnRatingLink": "/en/stats/leaderboard?page=return",
+                            "FirstServeReturnPointsWon": {
+                                "Percent": 22,
+                                "Dividend": 17,
+                                "Divisor": 76,
+                                "IsStatBetter": true
+                            },
+                            "SecondServeReturnPointsWon": {
+                                "Percent": 49,
+                                "Dividend": 26,
+                                "Divisor": 53,
+                                "IsStatBetter": true
+                            },
+                            "BreakPointsConverted": {
+                                "Percent": 29,
+                                "Dividend": 2,
+                                "Divisor": 7,
+                                "IsStatBetter": true
+                            },
+                            "ReturnGamesPlayed": {
+                                "Number": 17,
+                                "IsStatBetter": false
+                            }
+                        },
+                        "PointStats": {
+                            "TotalServicePointsWon": {
+                                "Percent": 79,
+                                "Dividend": 78,
+                                "Divisor": 99,
+                                "IsStatBetter": true
+                            },
+                            "TotalReturnPointsWon": {
+                                "Percent": 33,
+                                "Dividend": 43,
+                                "Divisor": 129,
+                                "IsStatBetter": true
+                            },
+                            "TotalPointsWon": {
+                                "Percent": 53,
+                                "Dividend": 121,
+                                "Divisor": 228,
+                                "IsStatBetter": true
+                            }
+                        }
+                    }
+                },
+                {
+                    "SetNumber": 1,
+                    "SetScore": "6",
+                    "TieBreakScore": 8,
+                    "Stats": null
+                },
+                {
+                    "SetNumber": 2,
+                    "SetScore": "7",
+                    "TieBreakScore": 7,
+                    "Stats": null
+                },
+                {
+                    "SetNumber": 3,
+                    "SetScore": "6",
+                    "TieBreakScore": null,
+                    "Stats": null
+                }
+            ],
+            "YearToDateStats": {
+                "ServiceRecordStats": {
+                    "DoubleFaults": {
+                        "Number": 17,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsFaced": {
+                        "Number": 29,
+                        "IsStatBetter": null
+                    },
+                    "ServiceGamesWon": {
+                        "Percent": 88
+                    },
+                    "TotalServicePointsWon": {
+                        "Percent": 70,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "Aces": {
+                        "Number": 43,
+                        "IsStatBetter": null
+                    },
+                    "FirstServe": {
+                        "Percent": 64,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "FirstServePointsWon": {
+                        "Percent": 76,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "SecondServePointsWon": {
+                        "Percent": 58,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsSaved": {
+                        "Percent": 67,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "ServiceGamesPlayed": {
+                        "Number": 82,
+                        "IsStatBetter": null
+                    }
+                },
+                "ReturnRecordStats": {
+                    "BreakPointOpportunities": {
+                        "Number": 55,
+                        "IsStatBetter": null
+                    },
+                    "ReturnGamesWon": {
+                        "Percent": 29
+                    },
+                    "ReturnPointsWon": {
+                        "Percent": 41
+                    },
+                    "TotalPointsWon": {
+                        "Percent": 55,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "FirstServeReturnPointsWon": {
+                        "Percent": 33,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "SecondServeReturnPointsWon": {
+                        "Percent": 54,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsConverted": {
+                        "Percent": 42,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "ReturnGamesPlayed": {
+                        "Number": 80,
+                        "IsStatBetter": null
+                    }
+                }
+            }
+        },
+        "OpponentTeam": {
+            "Player": {
+                "PlayerId": "K0AH",
+                "PlayerCountry": "USA",
+                "PlayerFirstName": "Sebastian",
+                "PlayerLastName": "Korda",
+                "PlayerCountryName": "United States",
+                "PlayerScRelativeUrlPlayerProfile": "/en/players/sebastian-korda/k0ah/overview"
+            },
+            "Partner": null,
+            "GameScore": null,
+            "SetScores": [
+                {
+                    "SetNumber": 0,
+                    "SetScore": null,
+                    "TieBreakScore": null,
+                    "Stats": {
+                        "Time": "03:09:00",
+                        "ServiceStats": {
+                            "ServeRating": {
+                                "Number": 287,
+                                "IsStatBetter": null
+                            },
+                            "ServeRatingLink": "/en/stats/leaderboard?page=serve",
+                            "DoubleFaults": {
+                                "Number": 4,
+                                "IsStatBetter": false
+                            },
+                            "Aces": {
+                                "Number": 15,
+                                "IsStatBetter": true
+                            },
+                            "FirstServe": {
+                                "Percent": 59,
+                                "Dividend": 76,
+                                "Divisor": 129,
+                                "IsStatBetter": false
+                            },
+                            "FirstServePointsWon": {
+                                "Percent": 78,
+                                "Dividend": 59,
+                                "Divisor": 76,
+                                "IsStatBetter": false
+                            },
+                            "SecondServePointsWon": {
+                                "Percent": 51,
+                                "Dividend": 27,
+                                "Divisor": 53,
+                                "IsStatBetter": false
+                            },
+                            "BreakPointsSaved": {
+                                "Percent": 71,
+                                "Dividend": 5,
+                                "Divisor": 7,
+                                "IsStatBetter": true
+                            },
+                            "ServiceGamesPlayed": {
+                                "Number": 17,
+                                "IsStatBetter": false
+                            }
+                        },
+                        "ReturnStats": {
+                            "ReturnRating": {
+                                "Number": 102,
+                                "IsStatBetter": null
+                            },
+                            "ReturnRatingLink": "/en/stats/leaderboard?page=return",
+                            "FirstServeReturnPointsWon": {
+                                "Percent": 15,
+                                "Dividend": 9,
+                                "Divisor": 62,
+                                "IsStatBetter": false
+                            },
+                            "SecondServeReturnPointsWon": {
+                                "Percent": 32,
+                                "Dividend": 12,
+                                "Divisor": 37,
+                                "IsStatBetter": false
+                            },
+                            "BreakPointsConverted": {
+                                "Percent": 50,
+                                "Dividend": 1,
+                                "Divisor": 2,
+                                "IsStatBetter": false
+                            },
+                            "ReturnGamesPlayed": {
+                                "Number": 17,
+                                "IsStatBetter": false
+                            }
+                        },
+                        "PointStats": {
+                            "TotalServicePointsWon": {
+                                "Percent": 67,
+                                "Dividend": 86,
+                                "Divisor": 129,
+                                "IsStatBetter": false
+                            },
+                            "TotalReturnPointsWon": {
+                                "Percent": 21,
+                                "Dividend": 21,
+                                "Divisor": 99,
+                                "IsStatBetter": false
+                            },
+                            "TotalPointsWon": {
+                                "Percent": 47,
+                                "Dividend": 107,
+                                "Divisor": 228,
+                                "IsStatBetter": false
+                            }
+                        }
+                    }
+                },
+                {
+                    "SetNumber": 1,
+                    "SetScore": "7",
+                    "TieBreakScore": 10,
+                    "Stats": null
+                },
+                {
+                    "SetNumber": 2,
+                    "SetScore": "6",
+                    "TieBreakScore": 3,
+                    "Stats": null
+                },
+                {
+                    "SetNumber": 3,
+                    "SetScore": "4",
+                    "TieBreakScore": null,
+                    "Stats": null
+                }
+            ],
+            "YearToDateStats": {
+                "ServiceRecordStats": {
+                    "DoubleFaults": {
+                        "Number": 5,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsFaced": {
+                        "Number": 12,
+                        "IsStatBetter": null
+                    },
+                    "ServiceGamesWon": {
+                        "Percent": 84
+                    },
+                    "TotalServicePointsWon": {
+                        "Percent": 67,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "Aces": {
+                        "Number": 20,
+                        "IsStatBetter": null
+                    },
+                    "FirstServe": {
+                        "Percent": 62,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "FirstServePointsWon": {
+                        "Percent": 74,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "SecondServePointsWon": {
+                        "Percent": 54,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsSaved": {
+                        "Percent": 64,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "ServiceGamesPlayed": {
+                        "Number": 29,
+                        "IsStatBetter": null
+                    }
+                },
+                "ReturnRecordStats": {
+                    "BreakPointOpportunities": {
+                        "Number": 14,
+                        "IsStatBetter": null
+                    },
+                    "ReturnGamesWon": {
+                        "Percent": 20
+                    },
+                    "ReturnPointsWon": {
+                        "Percent": 36
+                    },
+                    "TotalPointsWon": {
+                        "Percent": 51,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "FirstServeReturnPointsWon": {
+                        "Percent": 26,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "SecondServeReturnPointsWon": {
+                        "Percent": 51,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsConverted": {
+                        "Percent": 41,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "ReturnGamesPlayed": {
+                        "Number": 29,
+                        "IsStatBetter": null
+                    }
+                }
+            }
+        },
+        "PlayerTeam2": {
+            "PlayerId": "K0AH",
+            "PartnerId": null,
+            "PlayerFirstName": "S.",
+            "PlayerFirstNameFull": "Sebastian",
+            "PlayerLastName": "Korda",
+            "PlayerCountryCode": "USA",
+            "PlayerScRelativeUrlPlayerProfile": "/en/players/sebastian-korda/k0ah/overview",
+            "PlayerScRelativeUrlPlayerCountryFlag": "/en/~/media/images/flags/usa.svg",
+            "PlayerRankingUrl": "/en/players/sebastian-korda/k0ah/rankings-breakdown?team=singles",
+            "PlayerHeadshotImageUrl": null,
+            "PlayerGladiatorImageUrl": null,
+            "PartnerFirstName": "",
+            "PartnerFirstNameFull": null,
+            "PartnerLastName": null,
+            "PartnerCountryCode": null,
+            "PartnerScRelativeUrlPlayerProfile": null,
+            "PartnerScRelativeUrlPlayerCountryFlag": null,
+            "PartnerHeadshotImageUrl": null,
+            "PartnerGladiatorImageUrl": null,
+            "SeedPlayerTeam": null,
+            "EntryStatusPlayerTeam": null,
+            "GamePointsPlayerTeam": null,
+            "Sets": [
+                {
+                    "SetNumber": 0,
+                    "SetScore": null,
+                    "TieBreakScore": null,
+                    "Stats": {
+                        "Time": "03:09:00",
+                        "ServiceStats": {
+                            "ServeRating": {
+                                "Number": 287,
+                                "IsStatBetter": null
+                            },
+                            "ServeRatingLink": "/en/stats/leaderboard?page=serve",
+                            "DoubleFaults": {
+                                "Number": 4,
+                                "IsStatBetter": false
+                            },
+                            "Aces": {
+                                "Number": 15,
+                                "IsStatBetter": true
+                            },
+                            "FirstServe": {
+                                "Percent": 59,
+                                "Dividend": 76,
+                                "Divisor": 129,
+                                "IsStatBetter": false
+                            },
+                            "FirstServePointsWon": {
+                                "Percent": 78,
+                                "Dividend": 59,
+                                "Divisor": 76,
+                                "IsStatBetter": false
+                            },
+                            "SecondServePointsWon": {
+                                "Percent": 51,
+                                "Dividend": 27,
+                                "Divisor": 53,
+                                "IsStatBetter": false
+                            },
+                            "BreakPointsSaved": {
+                                "Percent": 71,
+                                "Dividend": 5,
+                                "Divisor": 7,
+                                "IsStatBetter": true
+                            },
+                            "ServiceGamesPlayed": {
+                                "Number": 17,
+                                "IsStatBetter": false
+                            }
+                        },
+                        "ReturnStats": {
+                            "ReturnRating": {
+                                "Number": 102,
+                                "IsStatBetter": null
+                            },
+                            "ReturnRatingLink": "/en/stats/leaderboard?page=return",
+                            "FirstServeReturnPointsWon": {
+                                "Percent": 15,
+                                "Dividend": 9,
+                                "Divisor": 62,
+                                "IsStatBetter": false
+                            },
+                            "SecondServeReturnPointsWon": {
+                                "Percent": 32,
+                                "Dividend": 12,
+                                "Divisor": 37,
+                                "IsStatBetter": false
+                            },
+                            "BreakPointsConverted": {
+                                "Percent": 50,
+                                "Dividend": 1,
+                                "Divisor": 2,
+                                "IsStatBetter": false
+                            },
+                            "ReturnGamesPlayed": {
+                                "Number": 17,
+                                "IsStatBetter": false
+                            }
+                        },
+                        "PointStats": {
+                            "TotalServicePointsWon": {
+                                "Percent": 67,
+                                "Dividend": 86,
+                                "Divisor": 129,
+                                "IsStatBetter": false
+                            },
+                            "TotalReturnPointsWon": {
+                                "Percent": 21,
+                                "Dividend": 21,
+                                "Divisor": 99,
+                                "IsStatBetter": false
+                            },
+                            "TotalPointsWon": {
+                                "Percent": 47,
+                                "Dividend": 107,
+                                "Divisor": 228,
+                                "IsStatBetter": false
+                            }
+                        }
+                    }
+                },
+                {
+                    "SetNumber": 1,
+                    "SetScore": "7",
+                    "TieBreakScore": 10,
+                    "Stats": null
+                },
+                {
+                    "SetNumber": 2,
+                    "SetScore": "6",
+                    "TieBreakScore": 3,
+                    "Stats": null
+                },
+                {
+                    "SetNumber": 3,
+                    "SetScore": "4",
+                    "TieBreakScore": null,
+                    "Stats": null
+                }
+            ],
+            "YearToDateStats": {
+                "ServiceRecordStats": {
+                    "DoubleFaults": {
+                        "Number": 5,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsFaced": {
+                        "Number": 12,
+                        "IsStatBetter": null
+                    },
+                    "ServiceGamesWon": {
+                        "Percent": 84
+                    },
+                    "TotalServicePointsWon": {
+                        "Percent": 67,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "Aces": {
+                        "Number": 20,
+                        "IsStatBetter": null
+                    },
+                    "FirstServe": {
+                        "Percent": 62,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "FirstServePointsWon": {
+                        "Percent": 74,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "SecondServePointsWon": {
+                        "Percent": 54,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsSaved": {
+                        "Percent": 64,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "ServiceGamesPlayed": {
+                        "Number": 29,
+                        "IsStatBetter": null
+                    }
+                },
+                "ReturnRecordStats": {
+                    "BreakPointOpportunities": {
+                        "Number": 14,
+                        "IsStatBetter": null
+                    },
+                    "ReturnGamesWon": {
+                        "Percent": 20
+                    },
+                    "ReturnPointsWon": {
+                        "Percent": 36
+                    },
+                    "TotalPointsWon": {
+                        "Percent": 51,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "FirstServeReturnPointsWon": {
+                        "Percent": 26,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "SecondServeReturnPointsWon": {
+                        "Percent": 51,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "BreakPointsConverted": {
+                        "Percent": 41,
+                        "Dividend": null,
+                        "Divisor": null,
+                        "IsStatBetter": null
+                    },
+                    "ReturnGamesPlayed": {
+                        "Number": 29,
+                        "IsStatBetter": null
+                    }
+                }
+            }
+        },
+        "Head2HeadUrl": "/en/players/atp-head-2-head/novak-djokovic-vs-sebastian-korda/d643/k0ah",
+        "UmpireFirstName": "",
+        "UmpireLastName": "",
+        "ScoreCentreMatchSortOrder": null,
+        "RightRailMatchSortOrder": null,
+        "CourtId": null
+    },
+    "Type": "MatchStats",
+    "Year": 2023,
+    "IsLive": true
+}
