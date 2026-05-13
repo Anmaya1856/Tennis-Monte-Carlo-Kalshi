@@ -63,29 +63,34 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## Folder Structure
+
+```
+Tennis Monte Carlo/
+├── atp/
+│   ├── scrapers/       — all ATP scraper scripts
+│   └── data/           — CSVs and SQLite databases (player_stats, player_rankings, match_scores, tournaments, tennis.db)
+├── kalshi/
+│   ├── data/2026/      — Kalshi candle CSVs (one per market); add 2027/ etc. for future years
+│   └── analysis/       — Kalshi Brier score notebooks and results
+└── simulation/         — Monte Carlo engine notebooks and backtest results
+```
+
 ## Running Code
 
-**Match prediction (production):** Open `monte_carlo_basic.ipynb` in Jupyter and run all cells. Set `P1_NAME`, `P2_NAME`, `COURT_TYPE`, and `YEAR` in the `INPUTS` cell. The notebook auto-loads stats from the most recent `player_stats_*.csv` and blends with rankings.
+**Match prediction (production):** Open `simulation/monte_carlo_basic.ipynb` in Jupyter and run all cells. Set `P1_NAME`, `P2_NAME`, `COURT_TYPE`, and `YEAR` in the `INPUTS` cell. The notebook auto-loads stats from the most recent `atp/data/player_stats_*.csv` and blends with rankings.
 
-**Match prediction (exploration):** `monte_carlo_basicV1.ipynb` contains three progressively complex implementations with hardcoded stats — useful for understanding or testing model variants without CSV data.
+**Match prediction (exploration):** `simulation/monte_carlo_basicV1.ipynb` contains three progressively complex implementations with hardcoded stats — useful for understanding or testing model variants without CSV data.
 
-**Update player stats (required periodically):**
+**Update player stats (required periodically) — run in order:**
 ```
-cd atp-world-tour-tennis-data/python
-python player_stats.py        # ~100k API calls, several minutes, 20 parallel workers
-python player_rankings.py     # current ATP rankings
-```
-
-**Update match scores** (root directory, not in python/):
-```
-python match_scores_scraper.py   # prompts for tournaments CSV path and output path
-```
-
-**Scrape tournaments:**
-```
-cd atp-world-tour-tennis-data/python
-python tournaments.py
-python match_scores.py
+cd atp/scrapers
+python player_rankings.py     # → atp/data/player_rankings_YYYY-MM-DD.csv
+python player_stats.py        # → atp/data/player_stats_YYYY-MM-DD.csv  (~100k API calls, 20 parallel workers)
+python tournaments.py         # → atp/data/tournaments_YYYY-YYYY.csv
+python match_scores_scraper.py  # prompts for paths; defaults to atp/data/
+python fetch_match_stats.py   # → atp/data/staging.db  (Hawkeye API)
+python load_to_db.py          # → atp/data/tennis.db
 ```
 
 No build step. Dependencies: `numpy`, `pandas`, `requests`, `lxml`, `tqdm`.
@@ -115,11 +120,13 @@ Break point detection (`is_break_point`) triggers a dedicated `bp_save_model` / 
 
 **Betting signal:** `Final_P = BLEND_W * monte_carlo_P + (1 - BLEND_W) * ranking_P`, where `ranking_P = points_A / (points_A + points_B)` and `BLEND_W = 0.5` by default.
 
-### Web Scraping (`atp-world-tour-tennis-data/python/`)
+### Web Scraping (`atp/scrapers/`)
 
 All scripts use `CF_CLEARANCE` cookie + matching `User-Agent` header to bypass Cloudflare. **The token is hardcoded at the top of each script** (`player_stats.py`, `match_scores_scraper.py`) — update it in source when it expires. Refresh via Chrome DevTools → Application → Cookies → `cf_clearance`. Scripts use `concurrent.futures.ThreadPoolExecutor` (20 workers) for parallel requests.
 
 ## Key Data Files
+
+All generated data lives in `atp/data/`.
 
 | File | Contents |
 |------|----------|
@@ -127,6 +134,8 @@ All scripts use `CF_CLEARANCE` cookie + matching `User-Agent` header to bypass C
 | `player_rankings_YYYY-MM-DD.csv` | Current ATP ranking and ranking points |
 | `match_scores_2023-2026.csv` | Historical match results with player IDs, ranks, scores |
 | `tournaments_2023-2026.csv` | Tournament metadata including surface |
+| `tennis.db` | Normalised SQLite DB (players, rankings, career stats, matches, set stats) |
+| `staging.db` | Raw Hawkeye API JSON responses (intermediate; consumed by `load_to_db.py`) |
 
 Player stats CSV key columns: `FirstServePercentage`, `FirstServePointsWonPercentage`, `SecondServePointsWonPercentage`, `FirstServeReturnPointsWonPercentage`, `SecondServeReturnPointsWonPercentage`, `BreakPointsFaced`, `BreakPointsSavedPercentage`, `BreakPointsOpportunities`, `BreakPointsConvertedPercentage`.
 
@@ -139,7 +148,7 @@ Player stats CSV key columns: `FirstServePercentage`, `FirstServePointsWonPercen
 
 ## Common Issues
 
-- **Player not found:** Check exact name spelling in `player_stats_*.csv`; try `surface="all"` if specific court type is missing.
+- **Player not found:** Check exact name spelling in `atp/data/player_stats_*.csv`; try `surface="all"` if specific court type is missing.
 - **Wide confidence intervals:** Increase `N` or `prior_strength`.
-- **Cloudflare 403:** Refresh `CF_CLEARANCE` token from browser and update it at the top of the relevant scraper script.
-- **Stale stats:** Always use the most recent `player_stats_*.csv`; year-old data misses form changes.
+- **Cloudflare 403:** Refresh `CF_CLEARANCE` token from browser and update it at the top of the relevant scraper script in `atp/scrapers/`.
+- **Stale stats:** Always use the most recent `atp/data/player_stats_*.csv`; year-old data misses form changes.
