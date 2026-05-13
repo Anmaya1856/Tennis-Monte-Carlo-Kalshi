@@ -574,15 +574,15 @@ def process_match(conn, data, known_players):
 
 def main():
     parser = argparse.ArgumentParser(description='Load staging.db + CSVs into normalized tennis.db')
-    parser.add_argument('--db',       default='tennis.db',  help='output SQLite DB (default: tennis.db)')
-    parser.add_argument('--staging',  default='staging.db', help='staging DB from fetch_match_stats.py')
-    parser.add_argument('--rankings', default=None,          help='player_rankings_*.csv (default: most recent)')
-    parser.add_argument('--stats',    default=None,          help='player_stats_*.csv (default: most recent)')
+    parser.add_argument('--db',       default='../data/tennis.db',  help='output SQLite DB (default: ../data/tennis.db)')
+    parser.add_argument('--staging',  default='../data/staging.db', help='staging DB from fetch_match_stats.py')
+    parser.add_argument('--rankings', default=None,                  help='player_rankings_*.csv (default: most recent in ../data/)')
+    parser.add_argument('--stats',    default=None,                  help='player_stats_*.csv (default: most recent in ../data/)')
     args = parser.parse_args()
 
     # Resolve CSVs
-    rankings_path = args.rankings or max(glob.glob('player_rankings_*.csv'))
-    stats_path    = args.stats    or max(glob.glob('player_stats_*.csv'))
+    rankings_path = args.rankings or max(glob.glob('../data/player_rankings_*.csv'))
+    stats_path    = args.stats    or max(glob.glob('../data/player_stats_*.csv'))
     print(f'Rankings CSV : {rankings_path}')
     print(f'Stats CSV    : {stats_path}')
     print(f'Staging DB   : {args.staging}')

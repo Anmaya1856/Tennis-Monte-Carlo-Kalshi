@@ -51,6 +51,6 @@ for row in rows:
     data.append([ranking, ranking_points, full_name, first_name, last_name, player_url, player_id, scrape_date])
 
 headers = [['ranking', 'ranking_points', 'full_name', 'first_name', 'last_name', 'player_url', 'player_id', 'scrape_date']]
-filename = f'player_rankings_{scrape_date}.csv'
+filename = f'../data/player_rankings_{scrape_date}.csv'
 array2csv(headers + data, filename)
 print(f'Saved {len(data)} players to {filename}')

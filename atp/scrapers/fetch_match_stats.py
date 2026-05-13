@@ -131,7 +131,7 @@ def fetch_one(year, event_id, match_code):
 
 def main():
     parser = argparse.ArgumentParser(description='Fetch Hawkeye match stats into a SQLite staging table')
-    parser.add_argument('--db',      default='staging.db',  help='SQLite staging database (default: staging.db)')
+    parser.add_argument('--db',      default='../data/staging.db',  help='SQLite staging database (default: ../data/staging.db)')
     parser.add_argument('--csv',     default=None,           help='match_scores CSV (default: most recent match_scores_*.csv)')
     parser.add_argument('--workers', default=10, type=int,   help='parallel HTTP workers (default: 10)')
     parser.add_argument('--limit',   default=None, type=int, help='only fetch this many matches (for testing)')
@@ -140,7 +140,7 @@ def main():
     # Resolve CSV
     csv_path = args.csv
     if not csv_path:
-        files = sorted(glob.glob('match_scores_*.csv'), reverse=True)
+        files = sorted(glob.glob('../data/match_scores_*.csv'), reverse=True)
         if not files:
             print('ERROR: No match_scores_*.csv found. Pass --csv path/to/file.csv')
             return

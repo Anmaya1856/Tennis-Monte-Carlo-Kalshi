@@ -30,7 +30,7 @@ STAT_COLS = [
 ]
 
 # Load players from most recent player_rankings CSV (search current dir and parent)
-ranking_files = sorted(glob.glob('player_rankings_*.csv') + glob.glob('../player_rankings_*.csv') + glob.glob('../../player_rankings_*.csv'), reverse=True)
+ranking_files = sorted(glob.glob('../data/player_rankings_*.csv') + glob.glob('player_rankings_*.csv') + glob.glob('../player_rankings_*.csv'), reverse=True)
 if not ranking_files:
     raise FileNotFoundError('No player_rankings_*.csv found. Run player_rankings.py first.')
 
@@ -68,7 +68,7 @@ def fetch_one(player, year, surface):
 
 
 scrape_date = datetime.today().strftime('%Y-%m-%d')
-filename    = f'player_stats_{scrape_date}.csv'
+filename    = f'../data/player_stats_{scrape_date}.csv'
 
 # Resume: skip tasks already written to today's output file
 done_set = set()

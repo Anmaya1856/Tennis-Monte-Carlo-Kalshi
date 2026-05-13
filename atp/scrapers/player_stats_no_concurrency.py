@@ -26,7 +26,7 @@ STAT_COLS = [
 ]
 
 # Load players from most recent player_rankings CSV (search current dir and parent)
-ranking_files = sorted(glob.glob('player_rankings_*.csv') + glob.glob('../player_rankings_*.csv') + glob.glob('../../player_rankings_*.csv'), reverse=True)
+ranking_files = sorted(glob.glob('../data/player_rankings_*.csv') + glob.glob('player_rankings_*.csv') + glob.glob('../player_rankings_*.csv'), reverse=True)
 if not ranking_files:
     raise FileNotFoundError('No player_rankings_*.csv found. Run player_rankings.py first.')
 
@@ -74,6 +74,6 @@ for player in players:
                 print(f'{done}/{total}  {name} {year}/{surface}')
 
 headers = [['player_id', 'player_slug', 'full_name', 'year', 'surface'] + STAT_COLS]
-filename = f'player_stats_{scrape_date}.csv'
+filename = f'../data/player_stats_{scrape_date}.csv'
 array2csv(headers + data, filename)
 print(f'\nSaved {len(data)} rows to {filename}')

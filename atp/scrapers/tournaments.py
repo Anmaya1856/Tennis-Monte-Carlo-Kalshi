@@ -147,5 +147,5 @@ for h in range(int(start_year), int(end_year) + 1):
     year = str(h)
     tourney_data += tournaments(year)
 
-filename = 'tournaments_' + start_year + '-' + end_year + '.csv'
+filename = '../data/tournaments_' + start_year + '-' + end_year + '.csv'
 array2csv(headers + tourney_data, filename)

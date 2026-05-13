@@ -125,13 +125,13 @@ def append_rows(rows, output_file):
 
 
 def main():
-    tournaments_file = input('Tournaments CSV path [tournaments_2023-2026.csv]: ').strip()
+    tournaments_file = input('Tournaments CSV path [../data/tournaments_2023-2026.csv]: ').strip()
     if not tournaments_file:
-        tournaments_file = 'tournaments_2023-2026.csv'
+        tournaments_file = '../data/tournaments_2023-2026.csv'
 
-    output_file = input('Output CSV path [match_scores_2023-2026.csv]: ').strip()
+    output_file = input('Output CSV path [../data/match_scores_2023-2026.csv]: ').strip()
     if not output_file:
-        output_file = 'match_scores_2023-2026.csv'
+        output_file = '../data/match_scores_2023-2026.csv'
 
     # Write header if output file doesn't exist yet
     if not os.path.exists(output_file):
