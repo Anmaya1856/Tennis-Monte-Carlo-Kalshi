@@ -34,7 +34,37 @@ Drops and recreates the `player_rankings` table in `tennis.db` with full histori
 
 ---
 
-Run these steps in order to build or refresh the full dataset.
+### Weekly Incremental Update (preferred)
+
+```
+cd atp/scrapers
+python update_db.py --cf <CF_CLEARANCE_TOKEN>
+```
+
+Updates `tennis.db` and `staging.db` directly with only new data — no CSV intermediaries, no re-fetching historical data. Typical cost: ~5,600 API calls vs ~23,000+ for a full rebuild.
+
+**What it does per run:**
+1. Scrapes ATP rankings page → upserts any new players; fetches rank history delta for all 500 players
+2. Re-fetches career stats for `year='all'` and `year=CURRENT_YEAR` for all players (5,000 calls — these accumulate throughout the season)
+3. Populates `tourney_slug` on any tournaments missing it (no HTTP — derived from existing DB/CSV data)
+4. Scrapes results pages for recently active tournaments → discovers new match codes
+5. Fetches Hawkeye stats for new matches only → `staging.db`
+6. Loads new staging rows into normalized `tennis.db` tables
+
+**Options:**
+- `--dry-run`: print what would be fetched without making any HTTP calls or DB writes
+- `--year 2026`: defaults to current year
+- `--future-window 30`: skip tournaments starting more than N days from today
+- `--past-window 60`: skip tournaments whose start_date is more than N days in the past
+- `--workers 10`: parallel workers for Hawkeye fetches
+
+**CF token:** Pass via `--cf TOKEN`, or set `CF_CLEARANCE` env var. Refresh from Chrome DevTools → Application → Cookies → cf_clearance (see [Cloudflare section](#cloudflare--cookies)).
+
+---
+
+### Full Rebuild from Scratch
+
+Only needed if `tennis.db` is lost. Run these steps in order to rebuild the full dataset (~23,000+ API calls).
 
 ### Step 1 — Player Rankings
 

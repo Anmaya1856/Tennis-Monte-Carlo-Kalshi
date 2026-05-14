@@ -88,7 +88,14 @@ cd atp/scrapers
 python backfill_rankings.py   # drops + recreates player_rankings in tennis.db with full historical weekly data
 ```
 
-**Update player stats (required periodically) — run in order:**
+**Weekly incremental update (preferred — ~5,600 API calls):**
+```
+cd atp/scrapers
+python update_db.py --cf <CF_CLEARANCE_TOKEN>
+```
+Updates tennis.db and staging.db directly. Fetches only new data: delta rank history, current-year career stats, new matches from recently active tournaments. Use `--dry-run` to preview what would be fetched without making any HTTP calls or DB writes.
+
+**Full rebuild from scratch (only if tennis.db is lost — ~23,000+ API calls) — run in order:**
 ```
 cd atp/scrapers
 python player_rankings.py     # → atp/data/player_rankings_YYYY-MM-DD.csv  (still needed for simulation notebook)
@@ -97,6 +104,7 @@ python tournaments.py         # → atp/data/tournaments_YYYY-YYYY.csv
 python match_scores_scraper.py  # prompts for paths; defaults to atp/data/
 python fetch_match_stats.py   # → atp/data/staging.db  (Hawkeye API)
 python load_to_db.py          # → atp/data/tennis.db
+python backfill_rankings.py   # re-populate player_rankings with full historical weekly data
 ```
 
 No build step. Dependencies: `numpy`, `pandas`, `requests`, `lxml`, `tqdm`.
@@ -141,7 +149,7 @@ All generated data lives in `atp/data/`.
 | `match_scores_2023-2026.csv` | Historical match results with player IDs, ranks, scores |
 | `tournaments_2023-2026.csv` | Tournament metadata including surface |
 | `tennis.db` | Normalised SQLite DB (players, rankings, career stats, matches, set stats). `player_rankings` table stores full historical weekly data: `roll_rank`, `roll_points`, `race_rank`, `race_points` per `(player_id, rank_date)`. |
-| `staging.db` | Raw Hawkeye API JSON responses (intermediate; consumed by `load_to_db.py`) |
+| `staging.db` | Raw Hawkeye API JSON responses (intermediate; consumed by `load_to_db.py` and `update_db.py`) |
 
 Player stats CSV key columns: `FirstServePercentage`, `FirstServePointsWonPercentage`, `SecondServePointsWonPercentage`, `FirstServeReturnPointsWonPercentage`, `SecondServeReturnPointsWonPercentage`, `BreakPointsFaced`, `BreakPointsSavedPercentage`, `BreakPointsOpportunities`, `BreakPointsConvertedPercentage`.
 
