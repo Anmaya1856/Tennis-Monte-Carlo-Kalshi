@@ -82,10 +82,16 @@ Tennis Monte Carlo/
 
 **Match prediction (exploration):** `simulation/monte_carlo_basicV1.ipynb` contains three progressively complex implementations with hardcoded stats — useful for understanding or testing model variants without CSV data.
 
+**One-time migration (already run — do not re-run unless rebuilding tennis.db from scratch):**
+```
+cd atp/scrapers
+python backfill_rankings.py   # drops + recreates player_rankings in tennis.db with full historical weekly data
+```
+
 **Update player stats (required periodically) — run in order:**
 ```
 cd atp/scrapers
-python player_rankings.py     # → atp/data/player_rankings_YYYY-MM-DD.csv
+python player_rankings.py     # → atp/data/player_rankings_YYYY-MM-DD.csv  (still needed for simulation notebook)
 python player_stats.py        # → atp/data/player_stats_YYYY-MM-DD.csv  (~100k API calls, 20 parallel workers)
 python tournaments.py         # → atp/data/tournaments_YYYY-YYYY.csv
 python match_scores_scraper.py  # prompts for paths; defaults to atp/data/
@@ -134,7 +140,7 @@ All generated data lives in `atp/data/`.
 | `player_rankings_YYYY-MM-DD.csv` | Current ATP ranking and ranking points |
 | `match_scores_2023-2026.csv` | Historical match results with player IDs, ranks, scores |
 | `tournaments_2023-2026.csv` | Tournament metadata including surface |
-| `tennis.db` | Normalised SQLite DB (players, rankings, career stats, matches, set stats) |
+| `tennis.db` | Normalised SQLite DB (players, rankings, career stats, matches, set stats). `player_rankings` table stores full historical weekly data: `roll_rank`, `roll_points`, `race_rank`, `race_points` per `(player_id, rank_date)`. |
 | `staging.db` | Raw Hawkeye API JSON responses (intermediate; consumed by `load_to_db.py`) |
 
 Player stats CSV key columns: `FirstServePercentage`, `FirstServePointsWonPercentage`, `SecondServePointsWonPercentage`, `FirstServeReturnPointsWonPercentage`, `SecondServeReturnPointsWonPercentage`, `BreakPointsFaced`, `BreakPointsSavedPercentage`, `BreakPointsOpportunities`, `BreakPointsConvertedPercentage`.

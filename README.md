@@ -21,6 +21,19 @@ Tennis Monte Carlo/
 
 ## Data Pipeline
 
+### One-time migration (already run — skip unless rebuilding tennis.db from scratch)
+
+```
+cd atp/scrapers
+python backfill_rankings.py
+```
+
+Drops and recreates the `player_rankings` table in `tennis.db` with full historical weekly ATP ranking data for all 500 players. Hits `https://www.atptour.com/en/-/www/rank/history/{player_id}?v=1` — no CF cookie required. ~500 API calls, runs in under a minute.
+
+**Schema:** `player_id`, `rank_date` (YYYY-MM-DD), `roll_rank`, `roll_points`, `race_rank`, `race_points`. ~211k rows total.
+
+---
+
 Run these steps in order to build or refresh the full dataset.
 
 ### Step 1 — Player Rankings
@@ -118,7 +131,7 @@ python load_to_db.py --db ../data/tennis.db --staging ../data/staging.db
 **Requires:** Steps 1–5 outputs.  
 **Output:** `atp/data/tennis.db`  
 **Tables:** `players`, `player_rankings`, `player_career_stats`, `tournaments`, `matches`, `match_players`, `match_stats`, `set_stats`, `match_ytd_stats`  
-**Notes:** Only inserts matches where **both** players exist in the `players` table (populated from the rankings CSV).
+**Notes:** Only inserts matches where **both** players exist in the `players` table (populated from the rankings CSV). The `player_rankings` table is managed separately by `backfill_rankings.py` (not `load_to_db.py`).
 
 ---
 
