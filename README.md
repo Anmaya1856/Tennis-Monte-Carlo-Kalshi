@@ -181,14 +181,15 @@ YEAR       = 2026     # loads YEAR-1 stats (i.e. 2025 data)
 The notebook auto-loads the most recent `player_stats_*.csv` and `player_rankings_*.csv` from `atp/data/`, runs 50,000 simulations, and outputs:
 
 - Monte Carlo win probability ± standard error + 95% CI for each player
-- ATP ranking-based win probability (points ratio)
-- Blended final probability: `BLEND_W × MC_prob + (1 - BLEND_W) × ranking_prob`
+- ATP 52-week rolling ranking points for each player
+- Final blended probability via logistic regression: `sigmoid(-1.7396 + 3.4792×MC_prob + 0.3129×log(pts1/pts2))`
 
 ### Notebook Guide
 
 | Notebook | Purpose |
 |----------|---------|
-| `simulation/monte_carlo_basic.ipynb` | **Production.** Reads live CSVs, full Bayesian model with break-point detection, ranking blend. Use this for real predictions. |
+| `simulation/monte_carlo_basic.ipynb` | **Production.** Reads live CSVs, full Bayesian model with break-point detection, logistic regression blend. Use this for real predictions. |
+| `simulation/logistic_blend.ipynb` | Trains and evaluates the logistic regression that combines MC probability with ATP ranking points. Train 2023–2025, test 2026. |
 | `simulation/monte_carlo_basicV1.ipynb` | **Development history.** Hardcoded Sinner/Djokovic stats. Contains three progressively complex model variants: (1) basic serve/return, (2) + momentum decay (BetaModel), (3) + break-point modeling. Useful for understanding the model architecture; not for real predictions. |
 | `simulation/brier_backtest.ipynb` | Backtests Monte Carlo predictions against historical results using Brier scores. |
 | `simulation/set1_brier.ipynb` | Same backtest but for first-set win probability only. |
@@ -249,8 +250,9 @@ A warning is printed if it falls back. If all three fail, the player name is lik
 |-----------|-------|--------|
 | `prior_strength` | 50–200 | Higher = more stable, slower to respond to in-match momentum. Lower = more reactive. |
 | `lam` | 0.90–0.95 | Exponential decay per observation. Lower = faster decay, stronger momentum effect. |
-| `BLEND_W` | 0.0–1.0 | Weight on Monte Carlo vs ATP ranking signal. 0.5 = equal blend. |
 | `N` | 50,000+ | Simulations per run. Double to 100,000 to roughly halve the 95% CI width. |
+
+The blend weight is no longer a tunable hyperparameter — it is set by the logistic regression coefficients trained in `simulation/logistic_blend.ipynb`.
 
 Break-point models use the player's actual career `bp_save_faced` / `bp_convert_opps` counts as their prior strength (not the tunable `prior_strength`), since those events are rare and career counts are naturally informative.
 
