@@ -192,7 +192,7 @@ The notebook auto-loads the most recent `player_stats_*.csv` and `player_ranking
 | `simulation/logistic_blend.ipynb` | Trains and evaluates the logistic regression that combines MC probability with ATP ranking points. Train 2023–2025, test 2026. |
 | `simulation/monte_carlo_basicV1.ipynb` | **Development history.** Hardcoded Sinner/Djokovic stats. Contains three progressively complex model variants: (1) basic serve/return, (2) + momentum decay (BetaModel), (3) + break-point modeling. Useful for understanding the model architecture; not for real predictions. |
 | `simulation/brier_backtest.ipynb` | Backtests Monte Carlo predictions against historical results using Brier scores. |
-| `simulation/set1_brier.ipynb` | Same backtest but for first-set win probability only. |
+| `simulation/set1_brier.ipynb` | Post-set-1 backtest: uses set-1 stats as prior, starts simulation from 1-0/0-1, applies LR blend. Best model: Brier 0.1408 (skill 43.7%). |
 | `kalshi/analysis/kalshi_brier.ipynb` | Brier score analysis of Kalshi market prices vs actual outcomes. |
 | `kalshi/analysis/kalshi_inplay_brier.ipynb` | Same analysis using in-play (live) Kalshi candle data. |
 
