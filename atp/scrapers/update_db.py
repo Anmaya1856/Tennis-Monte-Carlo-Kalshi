@@ -291,14 +291,16 @@ def process_match(conn, data, known_players):
     conn.execute("""
         INSERT OR IGNORE INTO matches
             (tournament_id, match_code, is_doubles, round_id, round_short, round_long,
-             court_name, duration_minutes, match_status, winner_player_id,
+             court_name, surface, duration_minutes, match_status, reason, winner_player_id,
              is_qualifier, number_of_sets, date_seq)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         tourney_id, m['MatchId'], 0,
         rnd.get('RoundId'), rnd.get('ShortName'), rnd.get('LongName'),
-        m.get('CourtName'), parse_minutes(m.get('MatchTimeTotal')),
-        m.get('MatchStatus'), winner_id,
+        m.get('CourtName'),
+        data.get('Tournament', {}).get('Court'),
+        parse_minutes(m.get('MatchTimeTotal')),
+        m.get('MatchStatus'), m.get('Reason'), winner_id,
         1 if m.get('IsQualifier') else 0,
         m.get('NumberOfSets'), m.get('DateSeq'),
     ))
@@ -686,6 +688,36 @@ def phase5_hawkeye(staging, new_keys, workers, ua, dry_run):
 
 # -- Phase 6: Load staging.db -> tennis.db -------------------------------------
 
+def load_scores_from_csv(conn, dry_run):
+    csv_files = sorted(glob.glob('../data/match_scores_*.csv'), reverse=True)
+    if not csv_files:
+        print('  No match_scores_*.csv found, skipping scores update')
+        return
+    csv_path = csv_files[0]
+    print(f'  Scores CSV: {csv_path}')
+
+    if dry_run:
+        print('  [DRY RUN] Would update p1_score/p2_score from CSV')
+        return
+
+    import csv as csv_mod
+    updated = 0
+    with open(csv_path, newline='', encoding='utf-8') as f:
+        for row in csv_mod.DictReader(f):
+            parsed = parse_match_link(row.get('match_link', ''))
+            if not parsed:
+                continue
+            year, event_id, match_code = parsed
+            cur = conn.execute("""
+                UPDATE matches SET p1_score = ?, p2_score = ?
+                WHERE LOWER(match_code) = LOWER(?)
+                  AND tournament_id = (SELECT id FROM tournaments WHERE event_id = ? AND event_year = ?)
+            """, (row.get('p1_score'), row.get('p2_score'), match_code, event_id, int(year)))
+            updated += cur.rowcount
+    conn.commit()
+    print(f'  Scores updated: {updated} rows')
+
+
 def phase6_load(conn, staging, dry_run):
     print('\n-- Phase 6: Load to tennis.db --')
 
@@ -765,6 +797,8 @@ def main():
     new_keys     = phase4_match_keys(staging, session, year_tourneys, args.dry_run)
     phase5_hawkeye(staging, new_keys, args.workers, ua, args.dry_run)
     phase6_load(conn, staging, args.dry_run)
+    print('\n-- Scores: Updating p1_score/p2_score from CSV --')
+    load_scores_from_csv(conn, args.dry_run)
 
     conn.close()
     staging.close()

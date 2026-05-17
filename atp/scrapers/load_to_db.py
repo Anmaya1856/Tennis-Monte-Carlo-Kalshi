@@ -94,12 +94,16 @@ CREATE TABLE IF NOT EXISTS matches (
     round_short      TEXT,
     round_long       TEXT,
     court_name       TEXT,
+    surface          TEXT,
     duration_minutes REAL,
     match_status     TEXT,
+    reason           TEXT,
     winner_player_id TEXT REFERENCES players(player_id),
     is_qualifier     INTEGER,
     number_of_sets   INTEGER,
     date_seq         TEXT,
+    p1_score         TEXT,
+    p2_score         TEXT,
     UNIQUE(tournament_id, match_code)
 );
 
@@ -423,6 +427,26 @@ def load_career_stats(conn, stats_path):
     log.info('player_career_stats: %d rows loaded, %d skipped (player not in rankings)', rows, skipped)
 
 
+# ── Scores CSV loader ─────────────────────────────────────────────────────────
+
+def load_scores(conn, scores_path):
+    df = pd.read_csv(scores_path)
+    updated = 0
+    for _, row in df.iterrows():
+        parsed = parse_match_link(row.get('match_link', ''))
+        if not parsed:
+            continue
+        year, event_id, match_code = parsed
+        cur = conn.execute("""
+            UPDATE matches SET p1_score = ?, p2_score = ?
+            WHERE LOWER(match_code) = LOWER(?)
+              AND tournament_id = (SELECT id FROM tournaments WHERE event_id = ? AND event_year = ?)
+        """, (row.get('p1_score'), row.get('p2_score'), match_code, event_id, int(year)))
+        updated += cur.rowcount
+    conn.commit()
+    log.info('match scores    : %d rows updated', updated)
+
+
 # ── Match processor ───────────────────────────────────────────────────────────
 
 def process_match(conn, data, known_players):
@@ -467,16 +491,17 @@ def process_match(conn, data, known_players):
     conn.execute("""
         INSERT OR IGNORE INTO matches
             (tournament_id, match_code, is_doubles, round_id, round_short, round_long,
-             court_name, duration_minutes, match_status, winner_player_id,
+             court_name, surface, duration_minutes, match_status, reason, winner_player_id,
              is_qualifier, number_of_sets, date_seq)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         tourney_id, m['MatchId'],
         0,
         rnd.get('RoundId'), rnd.get('ShortName'), rnd.get('LongName'),
         m.get('CourtName'),
+        data.get('Tournament', {}).get('Court'),
         parse_minutes(m.get('MatchTimeTotal')),
-        m.get('MatchStatus'), winner_id,
+        m.get('MatchStatus'), m.get('Reason'), winner_id,
         1 if m.get('IsQualifier') else 0,
         m.get('NumberOfSets'), m.get('DateSeq'),
     ))
@@ -578,13 +603,16 @@ def main():
     parser.add_argument('--staging',  default='../data/staging.db', help='staging DB from fetch_match_stats.py')
     parser.add_argument('--rankings', default=None,                  help='player_rankings_*.csv (default: most recent in ../data/)')
     parser.add_argument('--stats',    default=None,                  help='player_stats_*.csv (default: most recent in ../data/)')
+    parser.add_argument('--scores',   default=None,                  help='match_scores_*.csv (default: most recent in ../data/)')
     args = parser.parse_args()
 
     # Resolve CSVs
     rankings_path = args.rankings or max(glob.glob('../data/player_rankings_*.csv'))
     stats_path    = args.stats    or max(glob.glob('../data/player_stats_*.csv'))
+    scores_path   = args.scores   or max(glob.glob('../data/match_scores_*.csv'))
     print(f'Rankings CSV : {rankings_path}')
     print(f'Stats CSV    : {stats_path}')
+    print(f'Scores CSV   : {scores_path}')
     print(f'Staging DB   : {args.staging}')
     print(f'Output DB    : {args.db}')
     print()
@@ -599,6 +627,7 @@ def main():
     load_players(conn, rankings_path)
     load_rankings(conn, rankings_path)
     load_career_stats(conn, stats_path)
+    load_scores(conn, scores_path)
 
     # Load known player set for filtering
     known_players = {r[0] for r in conn.execute("SELECT player_id FROM players")}
