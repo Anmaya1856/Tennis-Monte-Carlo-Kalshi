@@ -1,8 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
-import csv
-import glob
 import os
+import sqlite3
 import threading
 from datetime import datetime
 
@@ -12,11 +11,8 @@ USER_AGENT   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KH
 COOKIES = {'cf_clearance': CF_CLEARANCE}
 HEADERS = {'User-Agent': USER_AGENT}
 
-YEARS    = ['all', '2026', '2025', '2024', '2023']
+YEARS    = ['all', '2026', '2025', '2024']
 SURFACES = ['all', 'Hard', 'Clay', 'Grass', 'Carpet']
-
-YEAR_ORDER    = {y: i for i, y in enumerate(YEARS)}
-SURFACE_ORDER = {s: i for i, s in enumerate(SURFACES)}
 
 STAT_COLS = [
     'Aces', 'DoubleFaults', 'FirstServePercentage',
@@ -29,54 +25,51 @@ STAT_COLS = [
     'ReturnPointsWonPercentage', 'TotalPointsWonPercentage',
 ]
 
-# Load players from most recent player_rankings CSV (search current dir and parent)
-ranking_files = sorted(glob.glob('../data/player_rankings_*.csv') + glob.glob('player_rankings_*.csv') + glob.glob('../player_rankings_*.csv'), reverse=True)
-if not ranking_files:
-    raise FileNotFoundError('No player_rankings_*.csv found. Run player_rankings.py first.')
+db_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'atp.db')
+conn = sqlite3.connect(db_path)
 
-players   = []
-rank_map  = {}  # player_id -> rank (int)
-with open(ranking_files[0], newline='') as f:
-    for row in csv.DictReader(f):
-        players.append({'player_id': row['player_id'], 'full_name': row['full_name'], 'player_url': row['player_url']})
-        rank_map[row['player_id']] = int(row['ranking'])
+conn.execute(f'''
+    CREATE TABLE IF NOT EXISTS player_stats (
+        player_id  TEXT NOT NULL,
+        year       TEXT NOT NULL,
+        surface    TEXT NOT NULL,
+        {chr(10).join(f"        {col}  REAL," for col in STAT_COLS)}
+        PRIMARY KEY (player_id, year, surface),
+        FOREIGN KEY (player_id) REFERENCES players(player_id)
+    )
+''')
+conn.commit()
 
-print(f'Loaded {len(players)} players from {ranking_files[0]}')
+players = [
+    {'player_id': row[0], 'player_url': row[3]}
+    for row in conn.execute('SELECT player_id, first_name, last_name, player_url FROM players')
+]
+print(f'Loaded {len(players)} players from atp.db')
+
+done_set = set(conn.execute('SELECT player_id, year, surface FROM player_stats'))
+if done_set:
+    print(f'Resuming — skipping {len(done_set)} already-completed tasks')
 
 
 def fetch_one(player, year, surface):
-    pid  = player['player_id']
-    name = player['full_name']
-    slug = player['player_url'].split('/')[5] if len(player['player_url'].split('/')) > 5 else pid
-    url  = f'https://www.atptour.com/en/-/www/stats/{pid}/{year}/{surface}?v=1'
+    pid = player['player_id']
+    url = f'https://www.atptour.com/en/-/www/stats/{pid}/{year}/{surface}?v=1'
     try:
         resp = requests.get(url, cookies=COOKIES, headers=HEADERS, timeout=30)
-        row  = [pid, slug, name, year, surface]
         if resp.status_code == 200:
             try:
                 j        = resp.json()
                 stats    = j.get('Stats', {})
                 combined = {**stats.get('ServiceRecordStats', {}), **stats.get('ReturnRecordStats', {})}
-                row += [combined.get(col, '') for col in STAT_COLS]
+                stat_vals = [combined.get(col) for col in STAT_COLS]
             except Exception:
-                row += ['' for _ in STAT_COLS]
+                stat_vals = [None] * len(STAT_COLS)
         else:
-            row += ['' for _ in STAT_COLS]
-        return row
+            stat_vals = [None] * len(STAT_COLS)
     except Exception:
-        return [pid, slug, name, year, surface] + ['' for _ in STAT_COLS]
+        stat_vals = [None] * len(STAT_COLS)
+    return (pid, year, surface, *stat_vals)
 
-
-scrape_date = datetime.today().strftime('%Y-%m-%d')
-filename    = f'../data/player_stats_{scrape_date}.csv'
-
-# Resume: skip tasks already written to today's output file
-done_set = set()
-if os.path.exists(filename):
-    with open(filename, newline='') as f:
-        for row in csv.DictReader(f):
-            done_set.add((row['player_id'], row['year'], row['surface']))
-    print(f'Resuming — skipping {len(done_set)} already-completed tasks')
 
 all_tasks = [(p, y, s) for p in players for y in YEARS for s in SURFACES]
 tasks     = [(p, y, s) for p, y, s in all_tasks if (p['player_id'], y, s) not in done_set]
@@ -85,44 +78,23 @@ done      = 0
 
 print(f'Fetching {total} combinations with 20 parallel workers...')
 
-write_lock = threading.Lock()
-file_exists = os.path.exists(filename)
+placeholders = ', '.join(['?'] * (3 + len(STAT_COLS)))
+col_names    = 'player_id, year, surface, ' + ', '.join(STAT_COLS)
+insert_sql   = f'INSERT OR IGNORE INTO player_stats ({col_names}) VALUES ({placeholders})'
 
-with open(filename, 'a', newline='') as out_csv:
-    writer = csv.writer(out_csv)
-    if not file_exists:
-        writer.writerow(['player_id', 'player_slug', 'full_name', 'year', 'surface'] + STAT_COLS)
+with ThreadPoolExecutor(max_workers=20) as pool:
+    futures = {pool.submit(fetch_one, p, y, s): None for p, y, s in tasks}
+    for fut in as_completed(futures):
+        try:
+            row = fut.result()
+        except Exception:
+            row = None
+        if row:
+            conn.execute(insert_sql, row)
+            conn.commit()
+        done += 1
+        if done % 50 == 0:
+            print(f'{done}/{total}')
 
-    with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = {pool.submit(fetch_one, p, y, s): None for p, y, s in tasks}
-        for fut in as_completed(futures):
-            try:
-                row = fut.result()
-            except Exception:
-                row = None
-            if row:
-                with write_lock:
-                    writer.writerow(row)
-                    out_csv.flush()
-            done += 1
-            if done % 50 == 0:
-                print(f'{done}/{total}')
-
-print('Sorting output by rank / year / surface...')
-with open(filename, newline='') as f:
-    reader  = csv.DictReader(f)
-    headers = reader.fieldnames
-    rows    = list(reader)
-
-rows.sort(key=lambda r: (
-    rank_map.get(r['player_id'], 9999),
-    YEAR_ORDER.get(r['year'], 99),
-    SURFACE_ORDER.get(r['surface'], 99),
-))
-
-with open(filename, 'w', newline='') as f:
-    writer = csv.DictWriter(f, fieldnames=headers)
-    writer.writeheader()
-    writer.writerows(rows)
-
-print(f'Saved to {filename}')
+conn.close()
+print(f'Done. {done} tasks completed.')

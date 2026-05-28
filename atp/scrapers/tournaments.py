@@ -5,7 +5,8 @@
 #               #
 # # # # # # # # #
 
-from scraping import array2csv
+import sqlite3
+import os
 import requests
 from lxml import html as lhtml
 from datetime import datetime
@@ -34,7 +35,6 @@ def tournaments(year):
     output = []
     for i in range(tourney_count):
         n = i + 1  # XPath is 1-indexed
-        tourney_order = n
 
         # Tournament type from badge image src
         # Note: parentheses around the XPath select the Nth li globally, not the Nth child within each ul
@@ -52,7 +52,7 @@ def tournaments(year):
             elif 'lvr'      in src: tourney_type = 'Laver Cup'
             elif 'nextgen'  in src: tourney_type = 'Next Gen Finals'
             elif 'atpcup'   in src: tourney_type = 'ATP Cup'
-            else:                   tourney_type = 'undefined'
+            else:                   continue  # skip Davis Cup, Olympics, ITF events
         else:
             tourney_type = ''
 
@@ -74,7 +74,6 @@ def tournaments(year):
         )
         tourney_date = date_list[0].strip() if date_list else ''
 
-        tourney_year = int(year)
         try:
             parts = tourney_date.split(' - ', 1)
             start_raw, end_raw = parts[0].strip(), parts[1].strip()
@@ -86,38 +85,29 @@ def tournaments(year):
                     start_date = datetime.strptime(start_raw + f', {end_date.year}', '%d %B, %Y')
                 except ValueError:
                     start_date = datetime(end_date.year, end_date.month, int(start_raw))
-            tourney_start_day, tourney_start_month, tourney_start_year = start_date.day, start_date.month, start_date.year
-            tourney_end_day,   tourney_end_month,   tourney_end_year   = end_date.day,   end_date.month,   end_date.year
+            start_iso = start_date.strftime('%Y-%m-%d')
+            end_iso   = end_date.strftime('%Y-%m-%d')
         except Exception:
-            tourney_start_day = tourney_start_month = tourney_start_year = ''
-            tourney_end_day   = tourney_end_month   = tourney_end_year   = ''
+            start_iso = end_iso = None
 
         # Tournament URL, slug, id — new format: /en/tournaments/slug/id/overview
         url_list = year_tree.xpath(
             f"(//ul[contains(@class,'events')]/li)[{n}]//a[contains(@class,'tournament__profile')]/@href"
         )
         if url_list:
-            tourney_url_suffix = url_list[0]
-            parts = tourney_url_suffix.split('/')
-            tourney_slug = parts[3] if len(parts) > 3 else ''
-            tourney_id   = parts[4] if len(parts) > 4 else ''
+            parts = url_list[0].split('/')
+            tourney_id  = parts[4] if len(parts) > 4 else ''
+            tourney_url = 'https://www.atptour.com' + url_list[0]
         else:
-            tourney_url_suffix = ''
-            tourney_slug = ''
-            tourney_id = ''
-
-        tourney_surface = ''  # not available on results-archive page
+            tourney_id  = ''
+            tourney_url = ''
 
         tourney_year_id = str(year) + '-' + tourney_id
-        output.append([
-            tourney_year_id, tourney_order, tourney_type,
-            tourney_name, tourney_id, tourney_slug,
-            tourney_location, tourney_date, year,
-            tourney_start_day, tourney_start_month, tourney_start_year,
-            tourney_end_day, tourney_end_month, tourney_end_year,
-            tourney_surface,
-            tourney_url_suffix,
-        ])
+        output.append((
+            tourney_year_id, tourney_type, tourney_name,
+            tourney_id, tourney_location,
+            start_iso, end_iso, tourney_url,
+        ))
 
     print(year + '    ' + str(tourney_count))
     return output
@@ -136,16 +126,35 @@ print('')
 print('Year    Tournaments')
 print('----    -----------')
 
-headers = [['tourney_year_id', 'tourney_order', 'tourney_type', 'tourney_name',
-            'tourney_id', 'tourney_slug', 'tourney_location', 'tourney_date', 'year',
-            'tourney_start_day', 'tourney_start_month', 'tourney_start_year',
-            'tourney_end_day', 'tourney_end_month', 'tourney_end_year',
-            'tourney_surface', 'tourney_url_suffix']]
-
 tourney_data = []
 for h in range(int(start_year), int(end_year) + 1):
-    year = str(h)
-    tourney_data += tournaments(year)
+    tourney_data += tournaments(str(h))
 
-filename = '../data/tournaments_' + start_year + '-' + end_year + '.csv'
-array2csv(headers + tourney_data, filename)
+db_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'atp.db')
+con = sqlite3.connect(db_path)
+cur = con.cursor()
+
+cur.execute('''
+    CREATE TABLE IF NOT EXISTS tournaments (
+        tourney_year_id  TEXT PRIMARY KEY,
+        tourney_type     TEXT,
+        tourney_name     TEXT,
+        tourney_id       TEXT,
+        tourney_location TEXT,
+        start_date       TEXT,
+        end_date         TEXT,
+        tourney_url      TEXT
+    )
+''')
+
+cur.executemany('''
+    INSERT OR REPLACE INTO tournaments
+        (tourney_year_id, tourney_type, tourney_name, tourney_id,
+         tourney_location, start_date, end_date, tourney_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+''', tourney_data)
+
+con.commit()
+con.close()
+
+print(f'\nWrote {len(tourney_data)} rows to {db_path}')
