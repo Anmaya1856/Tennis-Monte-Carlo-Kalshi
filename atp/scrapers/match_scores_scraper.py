@@ -5,14 +5,8 @@ import os
 import sqlite3
 from datetime import datetime
 
-import requests
+from curl_cffi import requests
 from lxml import html as lhtml
-
-CF_CLEARANCE = '3f9WMNEUmIHU4rl0fYMI0kpPjsSgnWKMYhFgE9z4B_c-1779980623-1.2.1.1-TbuX0FSfu6RjwKg2GURc4l69l1B2yXZ4aLF6XTNACBdcI565awpUcYOfaFWuMGVEPGVkPP_nGre5vrxvngsqBT_v4QxS.PwcHlQij5qO0MNUGfjqRO7hTs8xpzaGHYJ9XxTQkFrcCP4oZ_1xt.d3Ng5QWhwW.Z_dmY0XL6r6lqwtHfBIv1H08PFXoUArA.bBn0r5Q.4sI6BwbyGhZAmL3.Gt6dNxTjj.dMqVRY3ZielqC3CdpXnZixzJsa8Tw5bxVIU4eNltS72P.040lGxZNkq.J1IIhotwHqi50beGCwtyElltSs7Vvv2vNfIpy1Bgqx7qnlMIUe4KSHZjFugQWw'
-USER_AGENT   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
-
-COOKIES = {'cf_clearance': CF_CLEARANCE}
-HEADERS = {'User-Agent': USER_AGENT}
 
 HAWKEYE_URL = 'https://www.atptour.com/-/Hawkeye/MatchStats/Complete/{year}/{event_id}/{match_code}'
 
@@ -295,7 +289,7 @@ def parse_match_date(raw):
 def fetch_hawkeye(year, event_id, match_code):
     url = HAWKEYE_URL.format(year=year, event_id=event_id, match_code=match_code.lower())
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=30)
+        resp = requests.get(url, impersonate='chrome', timeout=30)
         if resp.status_code == 200:
             text = resp.text.strip()
             return json.loads(text) if text and text != 'null' else None
@@ -305,7 +299,7 @@ def fetch_hawkeye(year, event_id, match_code):
 
 
 def get_page_tree(url):
-    resp = requests.get(url, cookies=COOKIES, headers=HEADERS, timeout=30)
+    resp = requests.get(url, impersonate='chrome', timeout=30)
     if resp.status_code != 200:
         raise RuntimeError(f'HTTP {resp.status_code}')
     return lhtml.fromstring(resp.content)

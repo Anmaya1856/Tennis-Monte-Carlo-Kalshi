@@ -7,22 +7,13 @@
 
 import sqlite3
 import os
-import requests
+from curl_cffi import requests
 from lxml import html as lhtml
 from datetime import datetime
 
-# Paste your cf_clearance cookie value and matching User-Agent here.
-# To refresh: open atptour.com in Chrome, F12 → Application → Cookies → copy cf_clearance.
-# The cookie typically lasts 30 minutes to a few hours per session.
-CF_CLEARANCE = 'JzbaomCrOTpO3Vz65.m6R2goO70OJMPIMzs0tRgXZpQ-1777891545-1.2.1.1-kXLjIhNulJ55qqUKoFwbxEFx2nQQvTuWhCoHxhGtjiH7gwgBT5kyflNXfaNoGfjIEArosdCxEocaqjelX92w3HQwVJLTVQGO.J0.TWgkIQBWHleAae7mtkDyXb9Dd7urPKoN67pZisNCEEWXKjH.DZjj1xRfiskSBhTwJCRThwg3w3pZI3qSC1D4tu6DkCenRcOyWCQ7Z6A8Eo5fwcZpxkbW8Gzh_sOpHuUEIBx9TvFXzZwbnbaVlbT4R9Q5qAkfST3cTx2y.0l4bboGld0tngBGUpiT7bg2xCwiQqBaxZOpygZLoN485xgZ_OGbp5bBVw5v1mMZCYalrzUj2EJzyg'
-USER_AGENT   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
-
-COOKIES = {'cf_clearance': CF_CLEARANCE}
-HEADERS = {'User-Agent': USER_AGENT}
-
 
 def get_page_tree(url):
-    resp = requests.get(url, cookies=COOKIES, headers=HEADERS)
+    resp = requests.get(url, impersonate='chrome')
     return lhtml.fromstring(resp.content)
 
 

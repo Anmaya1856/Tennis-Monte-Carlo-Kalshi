@@ -1,15 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import requests
+from curl_cffi import requests
 import os
 import sqlite3
 import threading
 from datetime import datetime
-
-CF_CLEARANCE = '9aehtbVKLpaxluFa4L0wZF.qYWCn.GOGJryp4jCyBgQ-1777964797-1.2.1.1-dhJmRDP.r9OtDwz4EYkkuglboczFbIrvQjD5zO.a7vQzxA7Hde9UTRDOkE3V.XqYiSg0gAWNpGq5GUWmMWLR1ApChE7B8cwHqSoPPYyz8hmOmqJabci2J4yvElq1j5gJkEw7WYzJU9adn7at9KUMzgqeIwDqgr0_qRFlK3NPxl9V0J1vJ8x7HN..CrgJJ1hLLKDya1ucuJTHBwjy3vpXfQVAh1wFQByWZZVoopZwOWnIO.gqWoAaH0UpGLHPV4P5ihAz9qV3dPkkMVP6lpLc8DUKWXfZFPlwhQHT26oivRq5lYW05OEJDqPReeQlf2yj0L2NBNQixIhQFTwLYoQQUA'
-USER_AGENT   = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
-
-COOKIES = {'cf_clearance': CF_CLEARANCE}
-HEADERS = {'User-Agent': USER_AGENT}
 
 YEARS    = ['all', '2026', '2025', '2024']
 SURFACES = ['all', 'Hard', 'Clay', 'Grass', 'Carpet']
@@ -55,7 +49,7 @@ def fetch_one(player, year, surface):
     pid = player['player_id']
     url = f'https://www.atptour.com/en/-/www/stats/{pid}/{year}/{surface}?v=1'
     try:
-        resp = requests.get(url, cookies=COOKIES, headers=HEADERS, timeout=30)
+        resp = requests.get(url, impersonate='chrome', timeout=30)
         if resp.status_code == 200:
             try:
                 j        = resp.json()

@@ -1,7 +1,7 @@
 import argparse
 import os
 import sqlite3
-import requests
+from curl_cffi import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HISTORY_URL = 'https://www.atptour.com/en/-/www/rank/history/{player_id}?v=1'
@@ -23,13 +23,14 @@ CREATE TABLE IF NOT EXISTS player_rankings (
 def fetch_history(player_id):
     url = HISTORY_URL.format(player_id=player_id)
     try:
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, impersonate='chrome', timeout=30)
         if resp.status_code != 200:
+            print(f'  HTTP {resp.status_code} for {player_id}: {resp.url}')
             return player_id, None
         data = resp.json()
         rows = []
         for entry in data.get('History', []):
-            rank_date = entry['RankDate'][:10]  # "2026-05-04T00:00:00" -> "2026-05-04"
+            rank_date = entry['RankDate'][:10]
             rows.append((
                 player_id,
                 rank_date,
@@ -40,6 +41,7 @@ def fetch_history(player_id):
             ))
         return player_id, rows
     except Exception as e:
+        print(f'  DETAIL {player_id}: {e}')
         return player_id, None
 
 
