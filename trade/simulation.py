@@ -1,6 +1,24 @@
 import numpy as np
 
 
+def _sample_stats(stats):
+    sampled = {}
+    for key, num_key, den_key in [
+        ("first_in",      "first_in_num",      "first_in_den"),
+        ("win_first",     "win_first_num",      "win_first_den"),
+        ("win_second",    "win_second_num",     "win_second_den"),
+        ("return_first",  "return_first_num",   "return_first_den"),
+        ("return_second", "return_second_num",  "return_second_den"),
+    ]:
+        num = stats.get(num_key)
+        den = stats.get(den_key)
+        if num is not None and den is not None:
+            sampled[key] = np.random.beta(num + 0.5, (den - num) + 0.5)
+        else:
+            sampled[key] = stats[key]
+    return sampled
+
+
 def _parse_score(score_str):
     result = []
     for s in score_str.strip().split():
@@ -127,21 +145,17 @@ def estimate_win_prob(p1_stats, p2_stats, score_str, game_score_str,
         N = first_game_score[0] + first_game_score[1]
         p1_tb_first = p1_serves if (N + 1) // 2 % 2 == 0 else not p1_serves
 
-    game_wins = sum(
-        _sim_tiebreak(p1_tb_first, p1_stats, p2_stats, first_game_score)
-        if in_tiebreak else
-        _sim_game(p1_serves, p1_stats, p2_stats, first_game_score)
-        for _ in range(n_sims)
-    )
-    set_wins = sum(
-        _sim_set(p1_serves, p1_stats, p2_stats, set_games, first_game_score)[0]
-        for _ in range(n_sims)
-    )
-    match_wins = sum(
-        _sim_match_once(sets_won, current_set_games, first_game_score,
-                        p1_serves, best_of, p1_stats, p2_stats)
-        for _ in range(n_sims)
-    )
+    game_wins = set_wins = match_wins = 0
+    for _ in range(n_sims):
+        p1_s = _sample_stats(p1_stats)
+        p2_s = _sample_stats(p2_stats)
+        if in_tiebreak:
+            game_wins += _sim_tiebreak(p1_tb_first, p1_s, p2_s, first_game_score)
+        else:
+            game_wins += _sim_game(p1_serves, p1_s, p2_s, first_game_score)
+        set_wins   += _sim_set(p1_serves, p1_s, p2_s, set_games, first_game_score)[0]
+        match_wins += _sim_match_once(sets_won, current_set_games, first_game_score,
+                                      p1_serves, best_of, p1_s, p2_s)
     return {
         "match": match_wins / n_sims,
         "set":   set_wins   / n_sims,

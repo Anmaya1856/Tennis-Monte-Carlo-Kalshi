@@ -162,7 +162,7 @@ def _slow_loop():
             game_prob = probs["game"]
 
             yes_ask, yes_bid = get_best_ask_bid(ticker)
-            if yes_ask is None:
+            if yes_ask is None or yes_bid is None:
                 print(f"[poll] orderbook unavailable for {ticker}")
                 continue
 
