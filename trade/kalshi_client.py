@@ -53,28 +53,38 @@ def get_best_ask_bid(ticker):
     return ask, bid
 
 
+def _parse_order_response(data):
+    fill   = float(data["fill_count"])
+    price  = float(data.get("average_fill_price") or 0)
+    fee    = float(data.get("average_fee_paid")   or 0)
+    return {
+        "cost_dollars": round(fill * price, 6),
+        "fee_dollars":  round(fill * fee,   6),
+        "order_id":     data["order_id"],
+    }
+
+
 def place_order(ticker, side, count, yes_price_cents):
     """
-    Place a limit buy order on Kalshi.
-    side: "yes" or "no"
-    count: number of contracts
-    yes_price_cents: integer 1-99
+    Place a limit buy order on Kalshi (V2 API).
+    side: "yes" (buy YES = bid) or "no" (buy NO = ask on YES leg)
+    count: contracts, supports up to 2 decimal places
+    yes_price_cents: limit price in cents on the YES leg (1–99)
     Returns {"cost_dollars", "fee_dollars", "order_id"} or None on failure.
-    In DRY_RUN mode, returns a simulated fill at the limit price with zero fee.
     """
     if cfg.DRY_RUN:
-        cost = count * (yes_price_cents / 100)
+        cost = round(count * (yes_price_cents / 100), 6)
         return {"cost_dollars": cost, "fee_dollars": 0.0, "order_id": f"dry-{uuid.uuid4()}"}
 
     path = "/trade-api/v2/orders"
     body = {
-        "action":           "buy",
-        "client_order_id":  str(uuid.uuid4()),
-        "count":            count,
-        "side":             side,
-        "ticker":           ticker,
-        "type":             "limit",
-        "yes_price":        yes_price_cents,
+        "ticker":                      ticker,
+        "client_order_id":             str(uuid.uuid4()),
+        "side":                        "bid" if side == "yes" else "ask",
+        "count":                       f"{count:.2f}",
+        "price":                       f"{yes_price_cents / 100:.4f}",
+        "time_in_force":               "fill_or_kill",
+        "self_trade_prevention_type":  "taker_at_cross",
     }
     try:
         resp = requests.post(
@@ -86,31 +96,30 @@ def place_order(ticker, side, count, yes_price_cents):
         if not resp.ok:
             print(f"[kalshi] order failed {resp.status_code}: {resp.text}")
             return None
-        order = resp.json()["order"]
-        return {
-            "cost_dollars": order["cost"] / 100,
-            "fee_dollars":  order["fees"] / 100,
-            "order_id":     order["id"],
-        }
+        return _parse_order_response(resp.json())
     except Exception as e:
         print(f"[kalshi] order exception: {e}")
         return None
 
 
 def close_position(ticker, side, count, yes_price_cents):
-    """Sell an open position. Same as place_order but with action="sell"."""
+    """
+    Close an open position (V2 API).
+    side: "yes" (sell YES = ask) or "no" (buy YES back = bid)
+    yes_price_cents: YES-leg price in cents to close at
+    """
     if cfg.DRY_RUN:
         return {"cost_dollars": 0.0, "fee_dollars": 0.0, "order_id": f"dry-close-{uuid.uuid4()}"}
 
     path = "/trade-api/v2/orders"
     body = {
-        "action":           "sell",
-        "client_order_id":  str(uuid.uuid4()),
-        "count":            count,
-        "side":             side,
-        "ticker":           ticker,
-        "type":             "limit",
-        "yes_price":        yes_price_cents,
+        "ticker":                      ticker,
+        "client_order_id":             str(uuid.uuid4()),
+        "side":                        "ask" if side == "yes" else "bid",
+        "count":                       f"{count:.2f}",
+        "price":                       f"{yes_price_cents / 100:.4f}",
+        "time_in_force":               "fill_or_kill",
+        "self_trade_prevention_type":  "taker_at_cross",
     }
     try:
         resp = requests.post(
@@ -120,13 +129,9 @@ def close_position(ticker, side, count, yes_price_cents):
             timeout=5,
         )
         if not resp.ok:
+            print(f"[kalshi] close failed {resp.status_code}: {resp.text}")
             return None
-        order = resp.json()["order"]
-        return {
-            "cost_dollars": order["cost"] / 100,
-            "fee_dollars":  order["fees"] / 100,
-            "order_id":     order["id"],
-        }
+        return _parse_order_response(resp.json())
     except Exception as e:
         print(f"[kalshi] close exception: {e}")
         return None
@@ -180,8 +185,9 @@ def get_event_competitor_map(event_ticker):
     try:
         resp = requests.get(url, timeout=5)
         if not resp.ok:
+            print(f"[kalshi] event map HTTP {resp.status_code}: {resp.text[:200]}")
             return None
-        markets = resp.json()["event"]["markets"]
+        markets = resp.json()["markets"]
         return {
             m["custom_strike"]["tennis_competitor"]: {
                 "name":   m["yes_sub_title"],
@@ -189,7 +195,8 @@ def get_event_competitor_map(event_ticker):
             }
             for m in markets
         }
-    except Exception:
+    except Exception as e:
+        print(f"[kalshi] event map exception: {e}")
         return None
 
 
@@ -235,9 +242,16 @@ def parse_milestone_state(details, p1_competitor_id):
 
     p1_serves = (details.get("server", "") == p1_competitor_id)
 
+    c1_stats = details.get("competitor1_statistics", {})
+    c2_stats = details.get("competitor2_statistics", {})
+    p1_last10 = c1_stats.get("points_won_from_last_10") if p1_is_comp1 else c2_stats.get("points_won_from_last_10")
+    p2_last10 = c2_stats.get("points_won_from_last_10") if p1_is_comp1 else c1_stats.get("points_won_from_last_10")
+
     return {
         "score_str":      score_str,
         "game_score_str": game_score_str,
         "p1_serves":      p1_serves,
         "is_live":        is_live,
+        "p1_last10":      p1_last10,
+        "p2_last10":      p2_last10,
     }

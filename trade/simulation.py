@@ -82,10 +82,14 @@ def _sim_set(p1_serving, p1_stats, p2_stats, start_games=(0, 0), first_game_scor
         score = first_game_score if first_game else (0, 0)
         first_game = False
         if games[0] == 6 and games[1] == 6:
-            p1_won_tb = _sim_tiebreak(p1_serving, p1_stats, p2_stats, score)
+            # p1_serving is the CURRENT tiebreak server, not necessarily point-1 server.
+            # Invert the tiebreak formula to recover who actually served point 1.
+            N = score[0] + score[1]
+            p1_serves_tb_first = p1_serving if (N + 1) // 2 % 2 == 0 else not p1_serving
+            p1_won_tb = _sim_tiebreak(p1_serves_tb_first, p1_stats, p2_stats, score)
             games[0 if p1_won_tb else 1] += 1
             # Rule: tiebreak server receives in next set → flip
-            return (games[0] > games[1]), not p1_serving
+            return (games[0] > games[1]), not p1_serves_tb_first
         p1_won_game = _sim_game(p1_serving, p1_stats, p2_stats, score)
         games[0 if p1_won_game else 1] += 1
         p1_serving = not p1_serving
@@ -113,13 +117,33 @@ def _sim_match_once(sets_won, current_set_games, first_game_score, p1_serving,
 
 def estimate_win_prob(p1_stats, p2_stats, score_str, game_score_str,
                       p1_serves, best_of, n_sims=10_000):
-    """Return P(p1 wins) as a float in [0, 1]."""
+    """Return {"match", "set", "game"} win probabilities for p1."""
     sets_won, current_set_games = _parse_match_state(score_str, best_of)
     in_tiebreak      = (current_set_games == (6, 6))
     first_game_score = _parse_game_score(game_score_str, is_tiebreak=in_tiebreak)
-    wins = sum(
+    set_games        = current_set_games if current_set_games is not None else (0, 0)
+
+    if in_tiebreak:
+        N = first_game_score[0] + first_game_score[1]
+        p1_tb_first = p1_serves if (N + 1) // 2 % 2 == 0 else not p1_serves
+
+    game_wins = sum(
+        _sim_tiebreak(p1_tb_first, p1_stats, p2_stats, first_game_score)
+        if in_tiebreak else
+        _sim_game(p1_serves, p1_stats, p2_stats, first_game_score)
+        for _ in range(n_sims)
+    )
+    set_wins = sum(
+        _sim_set(p1_serves, p1_stats, p2_stats, set_games, first_game_score)[0]
+        for _ in range(n_sims)
+    )
+    match_wins = sum(
         _sim_match_once(sets_won, current_set_games, first_game_score,
                         p1_serves, best_of, p1_stats, p2_stats)
         for _ in range(n_sims)
     )
-    return wins / n_sims
+    return {
+        "match": match_wins / n_sims,
+        "set":   set_wins   / n_sims,
+        "game":  game_wins  / n_sims,
+    }

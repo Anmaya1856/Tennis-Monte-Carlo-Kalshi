@@ -6,8 +6,9 @@ import trade.config as cfg
 @dataclass
 class MatchState:
     budget_remaining: float = field(default_factory=lambda: cfg.MATCH_BUDGET)
-    position: dict = None          # None or {side, entry_price, mc_prob_at_entry, count, entry_time}
+    position: dict = None          # None or {side, entry_price, count, entry_time}
     cooldown_until: float = 0.0    # unix timestamp; 0 = no cooldown
+    last_mc_prob: float = None     # updated each slow loop iteration
 
 
 class MatchStateStore:
@@ -22,14 +23,19 @@ class MatchStateStore:
     def deduct_fill(self, ticker, cost, fee):
         self.get_or_create(ticker).budget_remaining -= (cost + fee)
 
-    def set_position(self, ticker, side, entry_price, mc_prob, count):
+    def restore_proceeds(self, ticker, proceeds):
+        self.get_or_create(ticker).budget_remaining += proceeds
+
+    def update_mc_prob(self, ticker, mc_prob):
+        self.get_or_create(ticker).last_mc_prob = mc_prob
+
+    def set_position(self, ticker, side, entry_price, count):
         ms = self.get_or_create(ticker)
         ms.position = {
-            "side":              side,
-            "entry_price":       entry_price,
-            "mc_prob_at_entry":  mc_prob,
-            "count":             count,
-            "entry_time":        time.time(),
+            "side":        side,
+            "entry_price": entry_price,
+            "count":       count,
+            "entry_time":  time.time(),
         }
 
     def clear_position(self, ticker):
