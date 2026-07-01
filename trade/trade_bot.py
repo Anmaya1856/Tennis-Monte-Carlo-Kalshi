@@ -10,7 +10,7 @@ Usage:
 import datetime, re, threading, time, unicodedata
 
 import trade.config as cfg
-from trade.atp_client    import fetch_match_state
+from trade.atp_client    import fetch_match_state, stats_ready
 from trade.kalshi_client import (get_best_ask_bid, place_order, close_position,
                                   fetch_milestone, fetch_milestone_id,
                                   get_event_competitor_map, parse_milestone_state)
@@ -137,6 +137,10 @@ def _slow_loop():
             else:
                 p1_stats, p2_stats = atp["p2_stats"], atp["p1_stats"]
                 p1_name, p2_name   = atp["p2_name"],  atp["p1_name"]
+
+            if not (stats_ready(p1_stats) and stats_ready(p2_stats)):
+                print(f"[poll] stats not ready yet ({ticker})")
+                continue
 
             # Step 2: Kalshi live score + server
             details = fetch_milestone(cached["milestone_id"])

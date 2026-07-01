@@ -26,7 +26,7 @@ def _ratio(field):
 
 def _raw(field):
     d, div = field.get("Dividend"), field.get("Divisor")
-    if div and div > 0:
+    if div and div > 0 and d is not None and d >= 0:
         return int(d), int(div)
     return None, None
 
@@ -67,6 +67,18 @@ def _parse_state_from_json(data):
         "p2_stats": _player_stats(t2["Sets"]),
         "best_of":  match["NumberOfSets"],
     }
+
+
+_STAT_KEYS = ["first_in", "win_first", "win_second", "return_first", "return_second"]
+
+
+def stats_ready(stats):
+    """False if any stat's num/den is missing, num is negative, or den <= 2."""
+    for key in _STAT_KEYS:
+        num, den = stats.get(f"{key}_num"), stats.get(f"{key}_den")
+        if num is None or den is None or num < 2 or den <= 2:
+            return False
+    return True
 
 
 def fetch_match_state(url):

@@ -25,7 +25,7 @@ LOG_DIR = "data/logs"
 # milestone_id, canonical ticker, and p1 identity are all resolved automatically.
 MATCH_CONFIG = [
     {
-        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms031",
-        "event_ticker": "KXATPCHALLENGERMATCH-26JUN30SURDRA",
+        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/540/ms043",
+        "event_ticker": "KXATPMATCH-26JUL01FUCTIE",
     },
 ]
