@@ -25,52 +25,46 @@ def edge_threshold(yes_ask):
     return cfg.CONTESTED_EDGE_THRESHOLD - (p - 65) * 0.01
 
 
-def compute_entry(mc_prob, yes_ask, yes_bid, budget_remaining):
+def compute_entry(mc_prob, p1_ask, p2_ask, budget_remaining):
     """
-    Evaluate whether to enter a position.
+    Evaluate whether to buy YES on either player's market.
     Returns order params dict or None.
     """
     if budget_remaining <= 0:
         return None
 
-    threshold = edge_threshold(yes_ask)
-    edge_yes  = mc_prob - yes_ask
-    no_ask    = 1 - yes_bid
-    edge_no   = (1 - mc_prob) - no_ask
+    candidates = []
+    for player, prob, ask in (("p1", mc_prob, p1_ask), ("p2", 1 - mc_prob, p2_ask)):
+        if prob - ask >= edge_threshold(ask):
+            candidates.append((prob - ask, player, prob, ask))
+    if not candidates:
+        return None
 
-    if edge_yes >= threshold and edge_yes >= edge_no:
-        count = _kelly_count(mc_prob, yes_ask, budget_remaining)
-        if count <= 0:
-            return None
-        return {
-            "side":            "yes",
-            "yes_price_cents": round(yes_ask * 100),
-            "count":           count,
-            "entry_price":     yes_ask,
-        }
-
-    if edge_no >= threshold:
-        count = _kelly_count(1 - mc_prob, no_ask, budget_remaining)
-        if count <= 0:
-            return None
-        no_price_cents = round(no_ask * 100)
-        return {
-            "side":            "no",
-            "yes_price_cents": 100 - no_price_cents,
-            "count":           count,
-            "entry_price":     no_ask,
-        }
-
-    return None
+    _, player, prob, ask = max(candidates)
+    count = _kelly_count(prob, ask, budget_remaining)
+    if count <= 0:
+        return None
+    return {
+        "player":      player,
+        "price_cents": round(ask * 100),
+        "count":       count,
+        "entry_price": ask,
+    }
 
 
 def should_stop_loss(entry_price, current_value):
     return current_value <= entry_price * (1 - cfg.STOP_LOSS_PCT)
 
 
-def should_take_profit(side, current_value, current_mc_prob, entry_price):
+def should_trail_exit(entry_price, high_water, current_value):
+    """Book profit when an armed position gives back TRAIL_GIVEBACK from its high."""
+    armed = high_water >= entry_price + cfg.TRAIL_ARM_DOLLARS
+    return armed and current_value <= high_water - cfg.TRAIL_GIVEBACK_DOLLARS
+
+
+def should_take_profit(player, current_value, current_mc_prob, entry_price):
     """Exit when market has reached model price, but only if we're in profit."""
     if current_value <= entry_price:
         return False
-    model_value = current_mc_prob if side == "yes" else (1 - current_mc_prob)
+    model_value = current_mc_prob if player == "p1" else (1 - current_mc_prob)
     return current_value >= model_value

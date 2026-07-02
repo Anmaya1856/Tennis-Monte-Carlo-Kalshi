@@ -64,25 +64,24 @@ def _parse_order_response(data):
     }
 
 
-def place_order(ticker, side, count, yes_price_cents):
+def place_order(ticker, count, price_cents):
     """
-    Place a limit buy order on Kalshi (V2 API).
-    side: "yes" (buy YES = bid) or "no" (buy NO = ask on YES leg)
+    Buy YES on a market (V2 API): "bid" order at the current ask.
     count: contracts, supports up to 2 decimal places
-    yes_price_cents: limit price in cents on the YES leg (1–99)
+    price_cents: limit price in cents (1–99), normally the best ask
     Returns {"cost_dollars", "fee_dollars", "order_id"} or None on failure.
     """
     if cfg.DRY_RUN:
-        cost = round(count * (yes_price_cents / 100), 6)
+        cost = round(count * (price_cents / 100), 6)
         return {"cost_dollars": cost, "fee_dollars": 0.0, "order_id": f"dry-{uuid.uuid4()}"}
 
     path = "/trade-api/v2/orders"
     body = {
         "ticker":                      ticker,
         "client_order_id":             str(uuid.uuid4()),
-        "side":                        "bid" if side == "yes" else "ask",
+        "side":                        "bid",
         "count":                       f"{count:.2f}",
-        "price":                       f"{yes_price_cents / 100:.4f}",
+        "price":                       f"{price_cents / 100:.4f}",
         "time_in_force":               "fill_or_kill",
         "self_trade_prevention_type":  "taker_at_cross",
     }
@@ -102,11 +101,10 @@ def place_order(ticker, side, count, yes_price_cents):
         return None
 
 
-def close_position(ticker, side, count, yes_price_cents):
+def close_position(ticker, count, price_cents):
     """
-    Close an open position (V2 API).
-    side: "yes" (sell YES = ask) or "no" (buy YES back = bid)
-    yes_price_cents: YES-leg price in cents to close at
+    Sell YES to close (V2 API): "ask" order at the current bid.
+    price_cents: limit price in cents, normally the best bid
     """
     if cfg.DRY_RUN:
         return {"cost_dollars": 0.0, "fee_dollars": 0.0, "order_id": f"dry-close-{uuid.uuid4()}"}
@@ -115,9 +113,9 @@ def close_position(ticker, side, count, yes_price_cents):
     body = {
         "ticker":                      ticker,
         "client_order_id":             str(uuid.uuid4()),
-        "side":                        "ask" if side == "yes" else "bid",
+        "side":                        "ask",
         "count":                       f"{count:.2f}",
-        "price":                       f"{yes_price_cents / 100:.4f}",
+        "price":                       f"{price_cents / 100:.4f}",
         "time_in_force":               "fill_or_kill",
         "self_trade_prevention_type":  "taker_at_cross",
     }
