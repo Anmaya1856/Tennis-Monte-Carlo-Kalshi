@@ -31,7 +31,7 @@ def test_dry_run_place_order_returns_mock():
     cfg.DRY_RUN = True
     try:
         from trade.kalshi_client import place_order
-        result = place_order("FAKE-TICKER", "yes", count=5, yes_price_cents=55)
+        result = place_order("FAKE-TICKER", count=5, price_cents=55)
         assert result is not None
         assert result["fee_dollars"] == 0.0
         assert abs(result["cost_dollars"] - 5 * 0.55) < 1e-9

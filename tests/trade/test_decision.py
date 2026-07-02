@@ -1,52 +1,73 @@
 ﻿import pytest
 import trade.config as cfg
-from trade.decision import compute_entry, should_stop_loss, should_take_profit
+from trade.decision import compute_entry, should_stop_loss, should_take_profit, should_trail_exit
 
-def test_entry_yes_when_mc_above_ask():
-    result = compute_entry(mc_prob=0.65, yes_ask=0.55, yes_bid=0.53, budget_remaining=5.0)
+def test_entry_p1_when_mc_above_ask():
+    # p1_ask=0.55 is in the contested 35-65 range → threshold 0.13; edge = 0.15
+    result = compute_entry(mc_prob=0.70, p1_ask=0.55, p2_ask=0.47, budget_remaining=5.0)
     assert result is not None
-    assert result["side"] == "yes"
+    assert result["player"] == "p1"
     assert result["entry_price"] == 0.55
 
-def test_entry_no_when_mc_below_bid():
-    result = compute_entry(mc_prob=0.40, yes_ask=0.55, yes_bid=0.53, budget_remaining=5.0)
+def test_entry_p2_when_mc_below():
+    # p2 model value 0.60 vs p2_ask 0.47 → edge 0.13 ≥ contested threshold
+    result = compute_entry(mc_prob=0.40, p1_ask=0.55, p2_ask=0.47, budget_remaining=5.0)
     assert result is not None
-    assert result["side"] == "no"
+    assert result["player"] == "p2"
+    assert result["entry_price"] == 0.47
 
 def test_no_entry_when_edge_below_threshold():
-    result = compute_entry(mc_prob=0.60, yes_ask=0.55, yes_bid=0.53, budget_remaining=5.0)
+    result = compute_entry(mc_prob=0.60, p1_ask=0.55, p2_ask=0.47, budget_remaining=5.0)
     assert result is None
 
 def test_no_entry_when_budget_zero():
-    result = compute_entry(mc_prob=0.70, yes_ask=0.55, yes_bid=0.53, budget_remaining=0.0)
+    result = compute_entry(mc_prob=0.70, p1_ask=0.55, p2_ask=0.47, budget_remaining=0.0)
     assert result is None
 
 def test_kelly_count_is_positive():
-    result = compute_entry(mc_prob=0.70, yes_ask=0.55, yes_bid=0.53, budget_remaining=5.0)
+    result = compute_entry(mc_prob=0.70, p1_ask=0.55, p2_ask=0.47, budget_remaining=5.0)
     assert result["count"] > 0
 
 def test_kelly_count_is_fractional():
     # fractional contracts: count should be float, not necessarily integer
-    result = compute_entry(mc_prob=0.70, yes_ask=0.55, yes_bid=0.53, budget_remaining=5.0)
+    result = compute_entry(mc_prob=0.70, p1_ask=0.55, p2_ask=0.47, budget_remaining=5.0)
     assert isinstance(result["count"], float)
 
 def test_stop_loss_triggers_below_threshold():
-    assert should_stop_loss(entry_price=0.60, current_value=0.50) is True
+    assert should_stop_loss(entry_price=0.60, current_value=0.60 * (1 - cfg.STOP_LOSS_PCT)) is True
 
 def test_stop_loss_does_not_trigger_above_threshold():
-    assert should_stop_loss(entry_price=0.60, current_value=0.55) is False
+    assert should_stop_loss(entry_price=0.60, current_value=0.60 * (1 - cfg.STOP_LOSS_PCT) + 0.01) is False
 
-def test_take_profit_yes_triggers_at_model_price():
-    # YES position: profit when market price reaches current MC prob
-    assert should_take_profit("yes", current_value=0.65, current_mc_prob=0.65) is True
+def test_take_profit_p1_triggers_at_model_price():
+    # p1 YES position: profit when market price reaches current MC prob (and above entry)
+    assert should_take_profit("p1", current_value=0.65, current_mc_prob=0.65, entry_price=0.55) is True
 
-def test_take_profit_yes_does_not_trigger_below():
-    assert should_take_profit("yes", current_value=0.60, current_mc_prob=0.65) is False
+def test_take_profit_p1_does_not_trigger_below():
+    assert should_take_profit("p1", current_value=0.60, current_mc_prob=0.65, entry_price=0.55) is False
 
-def test_take_profit_no_triggers_at_model_price():
-    # NO position: profit when NO market value (1 - yes_ask) reaches 1 - mc_prob
-    # mc_prob=0.40 → model NO = 0.60; current NO value = 0.60 → trigger
-    assert should_take_profit("no", current_value=0.60, current_mc_prob=0.40) is True
+def test_take_profit_p1_does_not_trigger_when_not_in_profit():
+    # at model price but below entry → no take profit
+    assert should_take_profit("p1", current_value=0.65, current_mc_prob=0.65, entry_price=0.70) is False
 
-def test_take_profit_no_does_not_trigger_below():
-    assert should_take_profit("no", current_value=0.55, current_mc_prob=0.40) is False
+def test_take_profit_p2_triggers_at_model_price():
+    # p2 YES position: model value = 1 - mc_prob
+    # mc_prob=0.40 → model p2 = 0.60; current value = 0.60 → trigger
+    assert should_take_profit("p2", current_value=0.60, current_mc_prob=0.40, entry_price=0.50) is True
+
+def test_take_profit_p2_does_not_trigger_below():
+    assert should_take_profit("p2", current_value=0.55, current_mc_prob=0.40, entry_price=0.50) is False
+
+def test_trail_not_armed_before_arm_threshold():
+    # high never reached entry + TRAIL_ARM → no exit even on a drop
+    assert should_trail_exit(entry_price=0.40, high_water=0.43, current_value=0.30) is False
+
+def test_trail_exits_on_giveback_from_high():
+    # armed (high 0.55 ≥ 0.40 + 0.05), gave back ≥ 0.05 from high
+    assert should_trail_exit(entry_price=0.40, high_water=0.55, current_value=0.50) is True
+
+def test_trail_holds_while_near_high():
+    assert should_trail_exit(entry_price=0.40, high_water=0.55, current_value=0.52) is False
+
+def test_trail_arms_exactly_at_threshold():
+    assert should_trail_exit(entry_price=0.40, high_water=0.45, current_value=0.40) is True

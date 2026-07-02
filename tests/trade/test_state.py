@@ -10,6 +10,13 @@ def test_initial_budget_equals_match_budget():
     ms = store.get_or_create("TICKER-A")
     assert ms.budget_remaining == cfg.MATCH_BUDGET
 
+def test_per_match_budget_overrides_default():
+    store = make_store()
+    ms = store.get_or_create("TICKER-A", budget=12.0)
+    assert ms.budget_remaining == 12.0
+    # subsequent calls without budget return the same state
+    assert store.get_or_create("TICKER-A").budget_remaining == 12.0
+
 def test_deduct_fill_reduces_budget():
     store = make_store()
     store.get_or_create("TICKER-A")
@@ -22,14 +29,15 @@ def test_no_position_initially():
 
 def test_set_and_clear_position():
     store = make_store()
-    store.get_or_create("TICKER-A")
-    store.set_position("TICKER-A", "yes", 0.55, count=2.50)
-    assert store.has_position("TICKER-A")
-    ms = store.get_or_create("TICKER-A")
+    store.get_or_create("EVENT-A")
+    store.set_position("EVENT-A", "EVENT-A-P1", 0.55, count=2.50)
+    assert store.has_position("EVENT-A")
+    ms = store.get_or_create("EVENT-A")
+    assert ms.position["ticker"] == "EVENT-A-P1"
     assert ms.position["entry_price"] == 0.55
     assert ms.position["count"] == 2.50
-    store.clear_position("TICKER-A")
-    assert not store.has_position("TICKER-A")
+    store.clear_position("EVENT-A")
+    assert not store.has_position("EVENT-A")
 
 def test_update_mc_prob():
     store = make_store()
