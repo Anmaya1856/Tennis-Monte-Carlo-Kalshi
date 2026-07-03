@@ -177,7 +177,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     set_prob  = probs["set"]
     game_prob = probs["game"]
 
-    _store.update_mc_prob(key, mc_prob)
+    _store.update_mc_prob(key, mc_prob, game_prob)
     _store.record_sim(key, score_key, total_points)
     cached["p1_name"] = p1_name
     cached["p2_name"] = p2_name
@@ -216,6 +216,27 @@ def _check_entry(key, cached, mc_prob, p1_ask, p2_ask):
 
     player = order_params["player"]
     ticker = cached["p1_ticker"] if player == "p1" else cached["p2_ticker"]
+
+    # Entry timing: don't buy a side that's probably about to lose the current
+    # game — wait for the game to resolve; the edge re-evaluates on the next sim.
+    if ms.last_game_prob is not None:
+        game_prob = ms.last_game_prob if player == "p1" else 1 - ms.last_game_prob
+        if game_prob < cfg.ENTRY_GAME_PROB_MIN:
+            print(f"[entry] deferred {ticker}: {player.upper()} game-win prob "
+                  f"{game_prob:.2f} < {cfg.ENTRY_GAME_PROB_MIN}")
+            return
+
+    # Re-entry guard: after a trail exit, don't buy the same side back at or
+    # above the price we just sold at.
+    # Half-cent tolerance: prices on the same 1c tick must count as "not lower"
+    guard = ms.trail_exit
+    if (guard and guard["player"] == player
+            and time.time() - guard["time"] < cfg.REENTRY_GUARD_SECS
+            and order_params["entry_price"] >= guard["price"] - 0.005):
+        print(f"[entry] blocked {ticker}: trail exit was {guard['price']:.2f}, "
+              f"ask {order_params['entry_price']:.2f} not lower "
+              f"({int(cfg.REENTRY_GUARD_SECS - (time.time() - guard['time']))}s left)")
+        return
 
     fill = place_order(ticker, order_params["count"], order_params["price_cents"])
     if fill is None:
@@ -275,6 +296,8 @@ def _check_exit(key, cached, p1_bid, p2_bid):
     _store.clear_position(key)
     if exit_reason == "stop_loss":
         _store.set_cooldown(key)
+    elif exit_reason == "trail_lock":
+        _store.set_trail_exit(key, player, current_value)
 
     logger.log_trade(
         pos["ticker"], "", "",

@@ -53,7 +53,8 @@ def compute_entry(mc_prob, p1_ask, p2_ask, budget_remaining):
 
 
 def should_stop_loss(entry_price, current_value):
-    return current_value <= entry_price * (1 - cfg.STOP_LOSS_PCT)
+    stop_distance = max(cfg.STOP_LOSS_PCT * entry_price, cfg.STOP_LOSS_MIN_DOLLARS)
+    return current_value <= entry_price - stop_distance + 1e-9
 
 
 def should_trail_exit(entry_price, high_water, current_value):

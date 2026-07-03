@@ -5,15 +5,31 @@ _HEADERS = {
     "Accept":  "application/json, text/plain, */*",
 }
 
+# One persistent session: keeps Cloudflare cookies + TLS session across requests,
+# so each fetch doesn't re-run bot detection from scratch.
+_session = None
+
+
+def _get_session():
+    global _session
+    if _session is None:
+        _session = cffi_requests.Session(impersonate="chrome", headers=_HEADERS)
+    return _session
+
 
 def _get_json(url):
-    """Fetch Hawkeye URL; return parsed JSON or None on error."""
+    """Fetch Hawkeye URL; return parsed JSON or None on error (with reason printed)."""
     try:
-        resp = cffi_requests.get(url, headers=_HEADERS, impersonate="chrome120", timeout=10)
+        resp = _get_session().get(url, timeout=10)
         if not resp.ok:
+            if resp.status_code == 403 and "Just a moment" in resp.text:
+                print(f"[atp] cloudflare challenge ({url})")
+            else:
+                print(f"[atp] HTTP {resp.status_code} ({url})")
             return None
         return resp.json()
-    except Exception:
+    except Exception as e:
+        print(f"[atp] exception: {e} ({url})")
         return None
 
 
@@ -86,6 +102,8 @@ def fetch_match_state(url):
     data = _get_json(url)
     if data is None:
         return None
-    if data.get("Match", {}).get("MatchStatus") != "P":
+    status = data.get("Match", {}).get("MatchStatus")
+    if status != "P":
+        print(f"[atp] match not in progress (MatchStatus={status!r}) ({url})")
         return None
     return _parse_state_from_json(data)

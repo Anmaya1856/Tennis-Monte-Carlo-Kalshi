@@ -9,6 +9,8 @@ class MatchState:
     position: dict = None          # None or {ticker, entry_price, count, entry_time}
     cooldown_until: float = 0.0    # unix timestamp; 0 = no cooldown
     last_mc_prob: float = None     # updated on each successful sim
+    last_game_prob: float = None   # p1's current-game win prob at last successful sim
+    trail_exit: dict = None        # {player, price, time} of last trail_lock exit
     last_sim_score: tuple = None   # (score_str, game_score_str, p1_serves) at last successful sim
     last_sim_time: float = 0.0     # unix timestamp of last successful sim
     last_sim_total_points: int = 0 # total points in the Hawkeye stats at last successful sim
@@ -31,8 +33,15 @@ class MatchStateStore:
     def restore_proceeds(self, ticker, proceeds):
         self.get_or_create(ticker).budget_remaining += proceeds
 
-    def update_mc_prob(self, ticker, mc_prob):
-        self.get_or_create(ticker).last_mc_prob = mc_prob
+    def update_mc_prob(self, ticker, mc_prob, game_prob=None):
+        ms = self.get_or_create(ticker)
+        ms.last_mc_prob = mc_prob
+        ms.last_game_prob = game_prob
+
+    def set_trail_exit(self, ticker, player, price):
+        self.get_or_create(ticker).trail_exit = {
+            "player": player, "price": price, "time": time.time(),
+        }
 
     def record_sim(self, ticker, score_key, total_points=0):
         ms = self.get_or_create(ticker)

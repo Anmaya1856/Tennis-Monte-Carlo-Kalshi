@@ -39,6 +39,11 @@ def test_stop_loss_triggers_below_threshold():
 def test_stop_loss_does_not_trigger_above_threshold():
     assert should_stop_loss(entry_price=0.60, current_value=0.60 * (1 - cfg.STOP_LOSS_PCT) + 0.01) is False
 
+def test_stop_loss_min_distance_on_cheap_entries():
+    # entry 0.15: 10% = 1.5c but the 4c floor applies → stop at 0.11
+    assert should_stop_loss(entry_price=0.15, current_value=0.12) is False
+    assert should_stop_loss(entry_price=0.15, current_value=0.11) is True
+
 def test_take_profit_p1_triggers_at_model_price():
     # p1 YES position: profit when market price reaches current MC prob (and above entry)
     assert should_take_profit("p1", current_value=0.65, current_mc_prob=0.65, entry_price=0.55) is True
