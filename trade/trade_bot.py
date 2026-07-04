@@ -192,7 +192,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         cached["p1_career"] = career.lookup(p1_name, surface)
         cached["p2_career"] = career.lookup(p2_name, surface)
         for nm, c in ((p1_name, cached["p1_career"]), (p2_name, cached["p2_career"])):
-            src = "NEUTRAL fallback" if c == career.NEUTRAL else f"{surface} career"
+            src = "NEUTRAL fallback" if c == career.neutral_for(surface) else f"{surface} career"
             print(f"[career] {nm}: {src}  " +
                   "  ".join(f"{k}={v*100:.0f}%" for k, v in c.items()))
 
@@ -212,6 +212,16 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
 
     _store.update_mc_prob(key, mc_prob, game_prob)
     _store.record_sim(key, score_key, total_points)
+
+    # Divergence stand-down: sustained large model-market disagreement means
+    # the market knows something we can't model — stop entering, keep exits live.
+    standdown, changed = _store.update_divergence(key, mc_prob, (p1_ask + p1_bid) / 2)
+    if changed:
+        ema = _store.get_or_create(key).divergence_ema
+        if standdown:
+            print(f"[standdown] {key}: divergence EMA {ema:.2f} > {cfg.DIVERGENCE_PAUSE} — entries paused")
+        else:
+            print(f"[standdown] {key}: divergence EMA {ema:.2f} < {cfg.DIVERGENCE_RESUME} — entries resumed")
     cached["p1_name"] = p1_name
     cached["p2_name"] = p2_name
     cached["best_of"] = atp["best_of"]
@@ -243,7 +253,8 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
 def _check_entry(key, cached, mc_prob, p1_ask, p2_ask):
     """Evaluate buying YES on either player's market; place order if edge exists."""
     ms = _store.get_or_create(key)
-    order_params = compute_entry(mc_prob, p1_ask, p2_ask, ms.budget_remaining)
+    order_params = compute_entry(mc_prob, p1_ask, p2_ask, ms.budget_remaining,
+                                 size_cap=ms.initial_budget)
     if order_params is None:
         return
 
@@ -417,6 +428,7 @@ def _tick(mc):
     if _store.has_position(key):
         _check_exit(key, cached, p1_bid, p2_bid)
     elif (sim_fresh
+          and not ms.standdown
           and not _store.is_in_cooldown(key)
           and not _store.is_budget_exhausted(key)):
         # Re-fetch prices: the Hawkeye fetch + sim take a few seconds and the

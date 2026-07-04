@@ -13,6 +13,7 @@ _SNAPSHOT_COLS = [
     "kalshi_p1_ask", "kalshi_p1_bid", "kalshi_p2_ask", "kalshi_p2_bid",
     "position_side", "position_entry_price", "position_count", "position_high_water",
     "position_current_value", "position_unrealized_pnl", "budget_remaining",
+    "divergence_ema", "standdown",
     "p1_first_serve_pct",    "p1_first_serve_num",    "p1_first_serve_den",
     "p1_first_serve_won_pct","p1_first_serve_won_num","p1_first_serve_won_den",
     "p1_second_serve_won_pct","p1_second_serve_won_num","p1_second_serve_won_den",
@@ -33,7 +34,8 @@ def _now_str():
 
 def _append(filename, cols, row):
     os.makedirs(cfg.LOG_DIR, exist_ok=True)
-    path = os.path.join(cfg.LOG_DIR, filename)
+    base, ext = os.path.splitext(filename)
+    path = os.path.join(cfg.LOG_DIR, base + cfg.LOG_SUFFIX + ext)
     write_header = not os.path.exists(path)
     with open(path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=cols)
@@ -91,6 +93,8 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
         "position_current_value":     pos_value if pos else "",
         "position_unrealized_pnl":    round(pos["count"] * (pos_value - pos["entry_price"]), 4) if pos else "",
         "budget_remaining":           ms.budget_remaining,
+        "divergence_ema":             round(ms.divergence_ema, 4),
+        "standdown":                  int(ms.standdown),
         "p1_first_serve_pct":         p1_stats["first_in"],
         "p1_first_serve_num":         p1_stats["first_in_num"],
         "p1_first_serve_den":         p1_stats["first_in_den"],

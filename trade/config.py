@@ -1,9 +1,16 @@
-import os
+import datetime, os
 
 # Trading parameters
 MATCH_BUDGET      = 5.00
 EDGE_MIN = 0.02   # entry edge required at the price extremes (raise to ~0.03 before going live: fees+spread)
 EDGE_MAX = 0.13   # entry edge required at 50c; threshold = EDGE_MIN + (EDGE_MAX-EDGE_MIN)*sin(pi*price)
+EDGE_MIN_UNDERDOG = 0.06  # floor on the entry edge for cheap markets (longshots are usually overpriced)
+UNDERDOG_PRICE    = 0.25  # the floor applies below this price
+TRAIL_SCALE_FRAC  = 0.35  # trail arm/giveback capped at this fraction of entry (fixes penny positions)
+STOP_MAX_FRAC     = 0.50  # stop distance capped at this fraction of entry
+DIVERGENCE_PAUSE      = 0.18  # pause entries when |model-market| EMA exceeds this
+DIVERGENCE_RESUME     = 0.10  # resume entries when the EMA falls back below this
+DIVERGENCE_EMA_ALPHA  = 0.05  # per-sim EMA weight (~15-20 min memory at one sim per point)
 STOP_LOSS_PCT     = 0.15
 STOP_LOSS_MIN_DOLLARS = 0.04  # stop distance is max(STOP_LOSS_PCT * entry, this floor)
 TRAIL_ARM_DOLLARS      = 0.05  # arm trailing lock once price is this far above entry
@@ -32,26 +39,29 @@ KALSHI_BASE = "https://external-api.kalshi.com"
 
 # Data logging
 LOG_DIR = "data/logs"
+# Each bot process writes its own CSVs, suffixed with its start time, so
+# parallel/restarted runs never collide.
+LOG_SUFFIX = datetime.datetime.now().strftime("_%Y%m%d_%H%M%S")
 
 # Match configuration
 # Each entry: hawkeye_url, event_ticker, and optional budget (dollars; defaults to MATCH_BUDGET)
 # milestone_id, canonical ticker, and p1 identity are all resolved automatically.
 MATCH_CONFIG = [
-    # {
-    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms004",
-    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL03LEGBAR",
-    #     "budget": 5.00,
-    #     "surface": "Hard",
-    # },
     {
-        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms005",
-        "event_ticker": "KXATPCHALLENGERMATCH-26JUL03WINMAN",
+        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms004",
+        "event_ticker": "KXATPCHALLENGERMATCH-26JUL04LEGWIN",
+        "budget": 5.00,
+        "surface": "Hard",
+    },
+    {
+        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms004",
+        "event_ticker": "KXATPCHALLENGERMATCH-26JUL04WATSHI",
         "budget": 5.00,
         "surface": "Hard",
     },
     # {
-    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/540/ms023",
-    #     "event_ticker": "KXATPMATCH-26JUL03RINDJO",
+    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/540/ms026",
+    #     "event_ticker": "KXATPMATCH-26JUL04DIMBER",
     #     "budget": 5.00,
     #     "surface": "Grass",
     # },

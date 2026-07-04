@@ -64,6 +64,23 @@ def test_cooldown_expires():
     finally:
         cfg.COOLDOWN_SECONDS = original
 
+def test_divergence_standdown_hysteresis():
+    store = make_store()
+    # sustained large divergence -> stand down
+    changed_at = None
+    for i in range(40):
+        sd, changed = store.update_divergence("EVENT-A", 0.80, 0.50)  # 30c divergence
+        if changed: changed_at = i
+    assert sd is True and changed_at is not None
+    # small divergence -> eventually resumes
+    for i in range(60):
+        sd, changed = store.update_divergence("EVENT-A", 0.52, 0.50)
+    assert sd is False
+    # a single spike must not trigger from zero
+    store2 = make_store()
+    sd, changed = store2.update_divergence("EVENT-B", 0.90, 0.50)
+    assert sd is False
+
 def test_budget_exhausted():
     store = make_store()
     store.get_or_create("TICKER-A")

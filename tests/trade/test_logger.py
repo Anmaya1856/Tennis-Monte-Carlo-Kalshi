@@ -6,6 +6,7 @@ from trade.state import MatchState
 @pytest.fixture(autouse=True)
 def tmp_log_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(cfg, "LOG_SUFFIX", "")
     yield tmp_path
 
 def test_trade_log_creates_file(tmp_log_dir):

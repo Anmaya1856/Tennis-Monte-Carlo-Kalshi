@@ -3,8 +3,9 @@ and blend them into in-match stats as Beta pseudo-counts (PRIOR_N virtual points
 import re, sqlite3, unicodedata
 import trade.config as cfg
 
-# Tour averages (games-weighted, 2025, players with >50 service games) — used
-# when a player can't be found in atp.db.
+# Tour averages (games-weighted, 2025, players with >30 service games) — used
+# when a player can't be found in atp.db. Per surface; NEUTRAL is the
+# all-surface fallback for unknown surfaces.
 NEUTRAL = {
     "first_in":      0.62,
     "win_first":     0.72,
@@ -12,6 +13,16 @@ NEUTRAL = {
     "return_first":  0.28,
     "return_second": 0.49,
 }
+
+NEUTRAL_BY_SURFACE = {
+    "Hard":  {"first_in": 0.62, "win_first": 0.73, "win_second": 0.51, "return_first": 0.27, "return_second": 0.49},
+    "Clay":  {"first_in": 0.62, "win_first": 0.70, "win_second": 0.51, "return_first": 0.31, "return_second": 0.50},
+    "Grass": {"first_in": 0.63, "win_first": 0.74, "win_second": 0.53, "return_first": 0.26, "return_second": 0.48},
+}
+
+
+def neutral_for(surface):
+    return NEUTRAL_BY_SURFACE.get(surface, NEUTRAL)
 
 _COLS = {
     "first_in":      "FirstServePercentage",
@@ -42,7 +53,7 @@ def lookup(player_name, surface):
         pid = next((r[0] for r in row if _norm(f"{r[1] or ''}{r[2] or ''}") == target), None)
         if pid is None:
             con.close()
-            return dict(NEUTRAL)
+            return dict(neutral_for(surface))
         cols = ", ".join(_COLS[k] for k in _STAT_KEYS)
         for year, surf in [("2025", surface), ("all", surface), ("2025", "all"), ("all", "all")]:
             r = con.execute(
@@ -57,7 +68,7 @@ def lookup(player_name, surface):
         con.close()
     except Exception as e:
         print(f"[career] lookup failed for {player_name}: {e}")
-    return dict(NEUTRAL)
+    return dict(neutral_for(surface))
 
 
 def blend(stats, career, prior_n=None):

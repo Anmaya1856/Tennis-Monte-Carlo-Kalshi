@@ -6,6 +6,7 @@ import trade.config as cfg
 @dataclass
 class MatchState:
     budget_remaining: float = field(default_factory=lambda: cfg.MATCH_BUDGET)
+    initial_budget: float = field(default_factory=lambda: cfg.MATCH_BUDGET)
     position: dict = None          # None or {ticker, entry_price, count, entry_time}
     cooldown_until: float = 0.0    # unix timestamp; 0 = no cooldown
     last_mc_prob: float = None     # updated on each successful sim
@@ -14,6 +15,8 @@ class MatchState:
     last_sim_score: tuple = None   # (score_str, game_score_str, p1_serves) at last successful sim
     last_sim_time: float = 0.0     # unix timestamp of last successful sim
     last_sim_total_points: int = 0 # total points in the Hawkeye stats at last successful sim
+    divergence_ema: float = 0.0    # EMA of |model - market| updated each sim
+    standdown: bool = False        # entries paused due to sustained model-market divergence
 
 
 class MatchStateStore:
@@ -22,9 +25,8 @@ class MatchStateStore:
 
     def get_or_create(self, ticker, budget=None):
         if ticker not in self._store:
-            self._store[ticker] = MatchState(
-                budget_remaining=budget if budget is not None else cfg.MATCH_BUDGET
-            )
+            b = budget if budget is not None else cfg.MATCH_BUDGET
+            self._store[ticker] = MatchState(budget_remaining=b, initial_budget=b)
         return self._store[ticker]
 
     def deduct_fill(self, ticker, cost, fee):
@@ -37,6 +39,19 @@ class MatchStateStore:
         ms = self.get_or_create(ticker)
         ms.last_mc_prob = mc_prob
         ms.last_game_prob = game_prob
+
+    def update_divergence(self, ticker, mc_prob, market_mid):
+        """Update the divergence EMA and the stand-down state (with hysteresis).
+        Returns (standdown, changed)."""
+        ms = self.get_or_create(ticker)
+        a = cfg.DIVERGENCE_EMA_ALPHA
+        ms.divergence_ema = (1 - a) * ms.divergence_ema + a * abs(mc_prob - market_mid)
+        prev = ms.standdown
+        if not ms.standdown and ms.divergence_ema > cfg.DIVERGENCE_PAUSE:
+            ms.standdown = True
+        elif ms.standdown and ms.divergence_ema < cfg.DIVERGENCE_RESUME:
+            ms.standdown = False
+        return ms.standdown, ms.standdown != prev
 
     def set_trail_exit(self, ticker, player, price):
         self.get_or_create(ticker).trail_exit = {

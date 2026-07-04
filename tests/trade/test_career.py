@@ -1,6 +1,6 @@
 import pytest
 import trade.config as cfg
-from trade.career import blend, lookup, NEUTRAL
+from trade.career import blend, lookup, neutral_for, NEUTRAL, NEUTRAL_BY_SURFACE
 
 
 def _match_stats(num, den):
@@ -31,8 +31,16 @@ def test_blend_zero_prior_is_identity():
     out = blend(stats, {k: 0.5 for k in NEUTRAL}, prior_n=0)
     assert out["win_first"] == stats["win_first"]
 
-def test_lookup_unknown_player_falls_back_to_neutral():
-    assert lookup("Zxq Nonexistent Player", "Grass") == NEUTRAL
+def test_lookup_unknown_player_falls_back_to_surface_neutral():
+    assert lookup("Zxq Nonexistent Player", "Grass") == NEUTRAL_BY_SURFACE["Grass"]
+    assert lookup("Zxq Nonexistent Player", "Clay") == NEUTRAL_BY_SURFACE["Clay"]
+    assert lookup("Zxq Nonexistent Player", "Carpet") == NEUTRAL  # unknown surface -> all-surface
+
+def test_surface_neutrals_internally_consistent():
+    # tour-wide, serve and return sides of the same point type must sum to ~1
+    for surf, n in NEUTRAL_BY_SURFACE.items():
+        assert abs(n["win_first"] + n["return_first"] - 1.0) <= 0.02
+        assert abs(n["win_second"] + n["return_second"] - 1.0) <= 0.02
 
 def test_lookup_known_player_differs_from_neutral():
     c = lookup("Novak Djokovic", "Grass")
