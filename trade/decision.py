@@ -1,3 +1,4 @@
+import math
 import trade.config as cfg
 
 
@@ -12,17 +13,10 @@ def _kelly_count(mc_prob, price, budget):
     return round(bet_dollars / price, 2)
 
 
-def edge_threshold(yes_ask):
-    """Higher threshold in the contested 35-65 range, tapering linearly outside it."""
-    p = yes_ask * 100
-    if p <= 30 or p >= 70:
-        return cfg.EDGE_THRESHOLD
-    if 35 <= p <= 65:
-        return cfg.CONTESTED_EDGE_THRESHOLD
-    if p < 35:
-        return cfg.EDGE_THRESHOLD + (p - 30) * 0.01
-    # 65 < p < 70
-    return cfg.CONTESTED_EDGE_THRESHOLD - (p - 65) * 0.01
+def edge_threshold(price):
+    """Smooth threshold: EDGE_MAX at 50c where model error and fees peak,
+    easing to EDGE_MIN at the price extremes (sin^2 keeps the hump narrow)."""
+    return cfg.EDGE_MIN + (cfg.EDGE_MAX - cfg.EDGE_MIN) * math.sin(math.pi * price) ** 2
 
 
 def compute_entry(mc_prob, p1_ask, p2_ask, budget_remaining):

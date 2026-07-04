@@ -153,6 +153,14 @@ def test_parse_milestone_state_advantage():
     assert state["game_score_str"] == "40-Ad"
 
 
+def test_parse_milestone_state_null_statistics():
+    # pre-match: keys present but null — must not crash
+    from trade.kalshi_client import parse_milestone_state
+    details = dict(_MILESTONE_DETAILS, competitor1_statistics=None, competitor2_statistics=None)
+    state = parse_milestone_state(details, "comp-a")
+    assert state["p1_last10"] is None
+    assert state["p2_last10"] is None
+
 def test_parse_milestone_state_tiebreak():
     from trade.kalshi_client import parse_milestone_state
     details = dict(_MILESTONE_DETAILS)

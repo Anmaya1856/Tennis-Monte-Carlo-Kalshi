@@ -240,8 +240,9 @@ def parse_milestone_state(details, p1_competitor_id):
 
     p1_serves = (details.get("server", "") == p1_competitor_id)
 
-    c1_stats = details.get("competitor1_statistics", {})
-    c2_stats = details.get("competitor2_statistics", {})
+    # "or {}" — pre-match the keys exist but hold null
+    c1_stats = details.get("competitor1_statistics") or {}
+    c2_stats = details.get("competitor2_statistics") or {}
     p1_last10 = c1_stats.get("points_won_from_last_10") if p1_is_comp1 else c2_stats.get("points_won_from_last_10")
     p2_last10 = c2_stats.get("points_won_from_last_10") if p1_is_comp1 else c1_stats.get("points_won_from_last_10")
 

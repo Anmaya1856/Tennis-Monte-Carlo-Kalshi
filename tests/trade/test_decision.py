@@ -1,6 +1,16 @@
 ﻿import pytest
 import trade.config as cfg
-from trade.decision import compute_entry, should_stop_loss, should_take_profit, should_trail_exit
+from trade.decision import compute_entry, edge_threshold, should_stop_loss, should_take_profit, should_trail_exit
+
+def test_edge_threshold_max_at_midpoint():
+    assert abs(edge_threshold(0.50) - cfg.EDGE_MAX) < 1e-9
+
+def test_edge_threshold_relaxes_at_extremes():
+    assert edge_threshold(0.92) < 0.06          # entries possible on strong favorites
+    assert edge_threshold(0.98) < edge_threshold(0.92) < edge_threshold(0.70)
+
+def test_edge_threshold_symmetric():
+    assert abs(edge_threshold(0.10) - edge_threshold(0.90)) < 1e-9
 
 def test_entry_p1_when_mc_above_ask():
     # p1_ask=0.55 is in the contested 35-65 range → threshold 0.13; edge = 0.15

@@ -15,6 +15,7 @@ from trade.kalshi_client import (get_best_ask_bid, place_order, close_position,
                                   fetch_milestone, fetch_milestone_id,
                                   get_event_competitor_map, parse_milestone_state)
 from trade.simulation    import estimate_win_prob
+from trade               import career
 from trade.state         import MatchStateStore
 from trade.decision      import (compute_entry, edge_threshold, should_stop_loss,
                                   should_take_profit, should_trail_exit)
@@ -49,16 +50,34 @@ def _pos_player(cached, pos):
 
 
 def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
-                server_name, p1_stats, p2_stats, mc_prob, game_prob, set_prob,
+                server_name, p1_stats, p2_stats, p1_blend, p2_blend,
+                mc_prob, game_prob, set_prob,
                 p1_ask, p1_bid, p2_ask, p2_bid, best_of, ms):
-    ts      = datetime.datetime.now().strftime("%H:%M:%S")
-    sep     = "─" * 62
-    mode    = "DRY RUN" if cfg.DRY_RUN else "LIVE"
-    edge_p1 = mc_prob - p1_ask
-    edge_p2 = (1 - mc_prob) - p2_ask
+    ts   = datetime.datetime.now().strftime("%H:%M:%S")
+    sep  = "─" * 62
+    mode = "DRY RUN" if cfg.DRY_RUN else "LIVE"
+    evk  = cached["p1_ticker"].rsplit("-", 1)[0]
+
+    def last(name):
+        return name.split()[-1]
 
     def edge_str(e, ask):
-        return f"+{e*100:.1f}¢  EDGE" if e >= edge_threshold(ask) else f"{e*100:.1f}¢"
+        s = f"{e*100:+.1f}¢"
+        return s + "  EDGE" if e >= edge_threshold(ask) else s
+
+    def prob_row(label, name, g, s, m, ask, bid):
+        return (f"  {label} {last(name):<12} {g*100:5.1f}%  {s*100:5.1f}%  {m*100:5.1f}%  |"
+                f"  {ask:.3f}   {bid:.3f}   {edge_str(m - ask, ask)}")
+
+    def stat_cells(s):
+        return (f"1st-in {s['first_in']*100:3.0f}%  1st-won {s['win_first']*100:3.0f}%  "
+                f"2nd-won {s['win_second']*100:3.0f}%  ret-1st {s['return_first']*100:3.0f}%  "
+                f"ret-2nd {s['return_second']*100:3.0f}%")
+
+    def prior_wt(s):
+        dens = [s[k + "_den"] for k in ("first_in", "win_first", "win_second",
+                                        "return_first", "return_second")]
+        return sum(cfg.PRIOR_N / (cfg.PRIOR_N + d) for d in dens) / len(dens)
 
     pos_line = "  No position"
     if ms.position:
@@ -66,35 +85,32 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
         player  = _pos_player(cached, pos)
         age     = int(time.time() - pos["entry_time"])
         cur_val = p1_bid if player == "p1" else p2_bid
+        value   = pos["count"] * cur_val
         unreal  = pos["count"] * (cur_val - pos["entry_price"])
-        pos_line = (f"  Position: {player.upper()} YES @ {pos['entry_price']:.3f}"
-                    f" × {pos['count']}  |  unrealized P&L: ${unreal:+.2f}  ({age}s ago)")
+        pos_line = (f"  Position: {player.upper()} YES @ {pos['entry_price']:.3f} × {pos['count']}"
+                    f"  |  HWM {pos['high_water']:.3f}  |  now {cur_val:.3f}"
+                    f"  |  value ${value:.2f}  |  uP&L ${unreal:+.2f}  ({age}s)")
 
-    cooldown_line = ""
+    budget_line = f"  Budget: ${ms.budget_remaining:.2f}"
     if ms.cooldown_until and time.time() < ms.cooldown_until:
-        secs_left = int(ms.cooldown_until - time.time())
-        cooldown_line = f"  Cooldown: {secs_left}s remaining\n"
-
-    def srow(label, name, s):
-        return (f"  {label} {name}:  "
-                f"1st-in={s['first_in']*100:.0f}%  "
-                f"1st-won={s['win_first']*100:.0f}%  "
-                f"2nd-won={s['win_second']*100:.0f}%  "
-                f"ret-1st={s['return_first']*100:.0f}%  "
-                f"ret-2nd={s['return_second']*100:.0f}%")
+        budget_line += f"  |  Cooldown: {int(ms.cooldown_until - time.time())}s left"
 
     print(
         f"\n{sep}\n"
-        f"  [{ts}]  {cached['p1_ticker']}  [{mode}]  Best of {best_of}\n"
-        f"  P1  {p1_name}  vs  P2  {p2_name}\n"
-        f"  Score: {score_str}  |  Game: {game_score_str}  |  Serving: {server_name}\n"
-        f"  MC P1 win: {mc_prob*100:.1f}%  |  Set: {set_prob*100:.1f}%  |  Game: {game_prob*100:.1f}%\n"
-        f"  P1 YES ask: {p1_ask:.3f}  bid: {p1_bid:.3f}  |  P2 YES ask: {p2_ask:.3f}  bid: {p2_bid:.3f}\n"
-        f"  Edge P1: {edge_str(edge_p1, p1_ask)}  |  Edge P2: {edge_str(edge_p2, p2_ask)}\n"
-        f"{srow('P1', p1_name, p1_stats)}\n"
-        f"{srow('P2', p2_name, p2_stats)}\n"
-        f"{pos_line}  |  Budget: ${ms.budget_remaining:.2f}\n"
-        f"{cooldown_line}"
+        f"  [{ts}]  {evk}  [{mode}]  Best of {best_of}\n"
+        f"  Score: {score_str}  |  Game: {game_score_str}  |  Serving: {last(server_name)}\n"
+        f"\n"
+        f"     {'':<12}  game     set   match  |  YES ask   bid     edge\n"
+        f"{prob_row('P1', p1_name, game_prob, set_prob, mc_prob, p1_ask, p1_bid)}\n"
+        f"{prob_row('P2', p2_name, 1 - game_prob, 1 - set_prob, 1 - mc_prob, p2_ask, p2_bid)}\n"
+        f"\n"
+        f"  P1 raw    :  {stat_cells(p1_stats)}\n"
+        f"  P1 blended:  {stat_cells(p1_blend)}   (prior wt {prior_wt(p1_stats)*100:.0f}%)\n"
+        f"  P2 raw    :  {stat_cells(p2_stats)}\n"
+        f"  P2 blended:  {stat_cells(p2_blend)}   (prior wt {prior_wt(p2_stats)*100:.0f}%)\n"
+        f"\n"
+        f"{pos_line}\n"
+        f"{budget_line}\n"
         f"{sep}"
     )
 
@@ -126,8 +142,13 @@ def _init_event(event_ticker):
         "p1_name":          None,
         "p2_name":          None,
         "best_of":          None,
+        "p1_career":        None,
+        "p2_career":        None,
     }
-    print(f"[init] OK  p1={event_map[p1_cid]['name']} ({p1_ticker})  p2 ticker={p2_ticker}  milestone={milestone_id}")
+    p2_name_k = next(info["name"] for info in event_map.values() if info["ticker"] == p2_ticker)
+    print(f"[init] OK  {event_ticker.rsplit('-', 1)[-1]}  "
+          f"P1 {event_map[p1_cid]['name']} ({p1_ticker})  vs  "
+          f"P2 {p2_name_k} ({p2_ticker})  milestone={milestone_id}")
     return cached
 
 
@@ -165,8 +186,20 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         print(f"[poll] ATP stats lag Kalshi score ({cached['p1_ticker']}); retrying")
         return "stale"
 
+    # Resolve career priors once per match (needs the aligned ATP names)
+    if cached["p1_career"] is None:
+        surface = mc.get("surface", cfg.SURFACE)
+        cached["p1_career"] = career.lookup(p1_name, surface)
+        cached["p2_career"] = career.lookup(p2_name, surface)
+        for nm, c in ((p1_name, cached["p1_career"]), (p2_name, cached["p2_career"])):
+            src = "NEUTRAL fallback" if c == career.NEUTRAL else f"{surface} career"
+            print(f"[career] {nm}: {src}  " +
+                  "  ".join(f"{k}={v*100:.0f}%" for k, v in c.items()))
+
+    p1_blend = career.blend(p1_stats, cached["p1_career"])
+    p2_blend = career.blend(p2_stats, cached["p2_career"])
     probs = estimate_win_prob(
-        p1_stats, p2_stats,
+        p1_blend, p2_blend,
         kalshi_state["score_str"],
         kalshi_state["game_score_str"],
         kalshi_state["p1_serves"],
@@ -200,7 +233,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     server_name = p1_name if kalshi_state["p1_serves"] else p2_name
     _print_poll(cached, p1_name, p2_name,
                 kalshi_state["score_str"], kalshi_state["game_score_str"],
-                server_name, p1_stats, p2_stats,
+                server_name, p1_stats, p2_stats, p1_blend, p2_blend,
                 mc_prob, game_prob, set_prob,
                 p1_ask, p1_bid, p2_ask, p2_bid, atp["best_of"],
                 _store.get_or_create(key))

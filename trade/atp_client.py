@@ -92,7 +92,7 @@ def stats_ready(stats):
     """False if any stat's num/den is missing, num is negative, or den <= 2."""
     for key in _STAT_KEYS:
         num, den = stats.get(f"{key}_num"), stats.get(f"{key}_den")
-        if num is None or den is None or num < 2 or den <= 2:
+        if num is None or den is None or num < 0 or den <= 2:
             return False
     return True
 
