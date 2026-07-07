@@ -33,8 +33,25 @@ def test_dry_run_place_order_returns_mock():
         from trade.kalshi_client import place_order
         result = place_order("FAKE-TICKER", count=5, price_cents=55)
         assert result is not None
-        assert result["fee_dollars"] == 0.0
+        # Kalshi taker fee: roundup(0.07 * 5 * 0.55 * 0.45) to a centicent = 0.0867
+        assert result["fee_dollars"] == pytest.approx(0.0867)
         assert abs(result["cost_dollars"] - 5 * 0.55) < 1e-9
+    finally:
+        cfg.DRY_RUN = original
+
+def test_taker_fee_formula():
+    from trade.kalshi_client import taker_fee
+    assert taker_fee(1, 0.50) == pytest.approx(0.0175)   # max fee point
+    assert taker_fee(1, 0.95) == pytest.approx(0.0034)   # 0.003325 rounded up
+    assert taker_fee(0, 0.50) == 0.0
+
+def test_dry_run_close_pays_fee():
+    original = cfg.DRY_RUN
+    cfg.DRY_RUN = True
+    try:
+        from trade.kalshi_client import close_position
+        result = close_position("FAKE-TICKER", count=3, price_cents=40)
+        assert result["fee_dollars"] == pytest.approx(0.0504)  # 0.07*3*0.4*0.6 = 0.0504 exactly
     finally:
         cfg.DRY_RUN = original
 
@@ -152,6 +169,22 @@ def test_parse_milestone_state_advantage():
     state = parse_milestone_state(details, "comp-a")
     assert state["game_score_str"] == "40-Ad"
 
+
+def test_parse_milestone_state_kstats_oriented():
+    from trade.kalshi_client import parse_milestone_state
+    details = dict(_MILESTONE_DETAILS,
+                   competitor1_statistics={"aces": 5, "double_faults": 2, "forehand_winners": 7,
+                                           "breakpoints_won": 1, "total_breakpoints": 4,
+                                           "max_points_in_a_row": 6},
+                   competitor2_statistics={"aces": 1, "double_faults": 4, "forehand_winners": 3,
+                                           "breakpoints_won": 2, "total_breakpoints": 3,
+                                           "max_points_in_a_row": 5})
+    # p1 = comp-b -> stats must swap
+    state = parse_milestone_state(details, "comp-b")
+    assert state["p1_kstats"]["aces"] == 1
+    assert state["p2_kstats"]["aces"] == 5
+    assert state["p2_kstats"]["bp_won"] == 1
+    assert state["p1_kstats"]["winners_fh"] == 3
 
 def test_parse_milestone_state_null_statistics():
     # pre-match: keys present but null — must not crash

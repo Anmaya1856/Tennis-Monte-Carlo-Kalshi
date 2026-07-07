@@ -1,4 +1,4 @@
-import base64, datetime, uuid, requests
+import base64, datetime, math, uuid, requests
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.backends import default_backend
@@ -53,6 +53,12 @@ def get_best_ask_bid(ticker):
     return ask, bid
 
 
+def taker_fee(count, price):
+    """Kalshi taker fee: roundup(0.07 * C * P * (1-P)), rounded up to a centicent.
+    Our fill_or_kill orders always cross the book, so they always pay it."""
+    return math.ceil(0.07 * count * price * (1 - price) * 10000 - 1e-9) / 10000
+
+
 def _parse_order_response(data):
     fill   = float(data["fill_count"])
     price  = float(data.get("average_fill_price") or 0)
@@ -72,8 +78,10 @@ def place_order(ticker, count, price_cents):
     Returns {"cost_dollars", "fee_dollars", "order_id"} or None on failure.
     """
     if cfg.DRY_RUN:
-        cost = round(count * (price_cents / 100), 6)
-        return {"cost_dollars": cost, "fee_dollars": 0.0, "order_id": f"dry-{uuid.uuid4()}"}
+        price = price_cents / 100
+        cost = round(count * price, 6)
+        return {"cost_dollars": cost, "fee_dollars": taker_fee(count, price),
+                "order_id": f"dry-{uuid.uuid4()}"}
 
     path = "/trade-api/v2/orders"
     body = {
@@ -107,7 +115,8 @@ def close_position(ticker, count, price_cents):
     price_cents: limit price in cents, normally the best bid
     """
     if cfg.DRY_RUN:
-        return {"cost_dollars": 0.0, "fee_dollars": 0.0, "order_id": f"dry-close-{uuid.uuid4()}"}
+        return {"cost_dollars": 0.0, "fee_dollars": taker_fee(count, price_cents / 100),
+                "order_id": f"dry-close-{uuid.uuid4()}"}
 
     path = "/trade-api/v2/orders"
     body = {
@@ -246,6 +255,24 @@ def parse_milestone_state(details, p1_competitor_id):
     p1_last10 = c1_stats.get("points_won_from_last_10") if p1_is_comp1 else c2_stats.get("points_won_from_last_10")
     p2_last10 = c2_stats.get("points_won_from_last_10") if p1_is_comp1 else c1_stats.get("points_won_from_last_10")
 
+    def _kstats(s):
+        """Shot-level stats logged for the break-point research dataset."""
+        return {
+            "aces":                s.get("aces"),
+            "double_faults":       s.get("double_faults"),
+            "winners_fh":          s.get("forehand_winners"),
+            "winners_bh":          s.get("backhand_winners"),
+            "unforced_fh":         s.get("forehand_unforced_errors"),
+            "unforced_bh":         s.get("backhand_unforced_errors"),
+            "errors_groundstroke": s.get("groundstroke_errors"),
+            "max_pts_streak":      s.get("max_points_in_a_row"),
+            "max_games_streak":    s.get("max_games_in_a_row"),
+            "bp_won":              s.get("breakpoints_won"),
+            "bp_total":            s.get("total_breakpoints"),
+        }
+    p1_kstats = _kstats(c1_stats if p1_is_comp1 else c2_stats)
+    p2_kstats = _kstats(c2_stats if p1_is_comp1 else c1_stats)
+
     return {
         "score_str":      score_str,
         "game_score_str": game_score_str,
@@ -253,4 +280,6 @@ def parse_milestone_state(details, p1_competitor_id):
         "is_live":        is_live,
         "p1_last10":      p1_last10,
         "p2_last10":      p2_last10,
+        "p1_kstats":      p1_kstats,
+        "p2_kstats":      p2_kstats,
     }

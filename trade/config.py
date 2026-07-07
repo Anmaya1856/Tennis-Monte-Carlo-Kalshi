@@ -24,11 +24,12 @@ MAX_MC_STALENESS_SECS = 120  # skip entries if sim older than this; forces re-si
 SIM_RETRY_SECS    = 15   # min gap between Hawkeye retries after a failed sim (protects CF-guarded endpoint)
 ATP_LAG_RETRY_SECS    = 2    # retry gap when Hawkeye stats lag the Kalshi score change
 ATP_LAG_MAX_WAIT_SECS = 10   # after this long waiting for fresh stats, sim with what we have
-N_SIMS            = 10_000
+N_SIMS            = 50_000  
+N_DRAWS           = 500     # stat draws for the exact engine; each draw evaluated exactly
 DRY_RUN           = True
 
 # Career-stat prior (identity anchor)
-PRIOR_N  = 40             # career stats worth this many virtual points per stat
+PRIOR_N  = 20             # career stats worth this many virtual points per stat
 SURFACE  = "Grass"        # default surface for career lookups; override per match with "surface"
 ATP_DB   = "atp/data/atp.db"
 
@@ -47,21 +48,33 @@ LOG_SUFFIX = datetime.datetime.now().strftime("_%Y%m%d_%H%M%S")
 # Each entry: hawkeye_url, event_ticker, and optional budget (dollars; defaults to MATCH_BUDGET)
 # milestone_id, canonical ticker, and p1 identity are all resolved automatically.
 MATCH_CONFIG = [
+    # {
+    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms002",
+    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL04LEGWIN",
+    #     "budget": 5.00,
+    #     "surface": "Hard",
+    # },
+    # {
+    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7389/ms021",
+    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL06ABOALVA",
+    #     "budget": 5.00,
+    #     "surface": "Clay",
+    # },
+    # {
+    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7389/ms020",
+    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL06VARFER",
+    #     "budget": 5.00,
+    #     "surface": "Clay",
+    # },
     {
-        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms004",
-        "event_ticker": "KXATPCHALLENGERMATCH-26JUL04LEGWIN",
+        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/540/ms004",
+        "event_ticker": "KXATPMATCH-26JUL07SINSTR",
         "budget": 5.00,
-        "surface": "Hard",
-    },
-    {
-        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms004",
-        "event_ticker": "KXATPCHALLENGERMATCH-26JUL04WATSHI",
-        "budget": 5.00,
-        "surface": "Hard",
+        "surface": "Grass",
     },
     # {
-    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/540/ms026",
-    #     "event_ticker": "KXATPMATCH-26JUL04DIMBER",
+    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/540/ms009",
+    #     "event_ticker": "KXATPMATCH-26JUL05HURSTR",
     #     "budget": 5.00,
     #     "surface": "Grass",
     # },

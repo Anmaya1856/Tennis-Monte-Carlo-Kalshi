@@ -24,8 +24,27 @@ _SNAPSHOT_COLS = [
     "p2_second_serve_won_pct","p2_second_serve_won_num","p2_second_serve_won_den",
     "p2_first_return_won_pct","p2_first_return_won_num","p2_first_return_won_den",
     "p2_second_return_won_pct","p2_second_return_won_num","p2_second_return_won_den",
-    "p1_last10_pts_won", "p2_last10_pts_won", "match_outcome",
+    "p1_last10_pts_won", "p2_last10_pts_won",
+    # Hawkeye extras (break-point research)
+    "p1_bp_saved_num", "p1_bp_saved_den", "p1_bp_conv_num", "p1_bp_conv_den",
+    "p1_serve_rating", "p1_return_rating",
+    "p2_bp_saved_num", "p2_bp_saved_den", "p2_bp_conv_num", "p2_bp_conv_den",
+    "p2_serve_rating", "p2_return_rating",
+    # Kalshi shot-level stats (break-point research)
+    "p1_k_aces", "p1_k_double_faults", "p1_k_winners_fh", "p1_k_winners_bh",
+    "p1_k_unforced_fh", "p1_k_unforced_bh", "p1_k_errors_groundstroke",
+    "p1_k_max_pts_streak", "p1_k_max_games_streak", "p1_k_bp_won", "p1_k_bp_total",
+    "p2_k_aces", "p2_k_double_faults", "p2_k_winners_fh", "p2_k_winners_bh",
+    "p2_k_unforced_fh", "p2_k_unforced_bh", "p2_k_errors_groundstroke",
+    "p2_k_max_pts_streak", "p2_k_max_games_streak", "p2_k_bp_won", "p2_k_bp_total",
+    "match_outcome",
 ]
+
+_HAWKEYE_EXTRAS = ["bp_saved_num", "bp_saved_den", "bp_conv_num", "bp_conv_den",
+                   "serve_rating", "return_rating"]
+_KALSHI_EXTRAS = ["aces", "double_faults", "winners_fh", "winners_bh", "unforced_fh",
+                  "unforced_bh", "errors_groundstroke", "max_pts_streak",
+                  "max_games_streak", "bp_won", "bp_total"]
 
 
 def _now_str():
@@ -67,11 +86,19 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
                  p1_stats, p2_stats, p1_last10, p2_last10,
                  mc_prob_p1, mc_set_prob_p1, mc_game_prob_p1,
                  p1_ask, p1_bid, p2_ask, p2_bid,
-                 ms, pos_side, pos_value):
+                 ms, pos_side, pos_value, p1_kstats=None, p2_kstats=None):
     """ms: MatchState for this match; pos_side/pos_value: 'p1'/'p2' and owned-market
-    bid when a position is open, else None."""
+    bid when a position is open, else None. p1_kstats/p2_kstats: Kalshi shot-level dicts."""
     pos = ms.position
+    extras = {}
+    for p, stats in (("p1", p1_stats), ("p2", p2_stats)):
+        for k in _HAWKEYE_EXTRAS:
+            extras[f"{p}_{k}"] = stats.get(k, "")
+    for p, ks in (("p1", p1_kstats), ("p2", p2_kstats)):
+        for k in _KALSHI_EXTRAS:
+            extras[f"{p}_k_{k}"] = (ks or {}).get(k, "")
     _append("match_snapshots.csv", _SNAPSHOT_COLS, {
+        **extras,
         "timestamp":                  _now_str(),
         "ticker":                     ticker,
         "p1_name":                    p1_name,

@@ -71,6 +71,25 @@ def test_snapshot_log_position_columns(tmp_log_dir):
     assert rows[0]["position_current_value"] == "0.45"
     assert rows[0]["position_unrealized_pnl"] == "0.25"
 
+def test_snapshot_logs_bp_research_columns(tmp_log_dir):
+    ms = MatchState(budget_remaining=5.0)
+    p1 = _stats(0.6, 0.7, 0.5, 0.3, 0.45)
+    p1["bp_saved_num"], p1["bp_saved_den"] = 5, 6
+    p1["serve_rating"] = 191
+    p2 = _stats(0.6, 0.65, 0.48, 0.28, 0.42)
+    k1 = {"aces": 3, "double_faults": 1, "unforced_fh": 7, "bp_won": 1, "bp_total": 4}
+    log_snapshot("TICK", "P1", "P2", "3-2", "40-15", "p1", p1, p2, 6, 4,
+                 0.62, 0.58, 0.72, 0.54, 0.52, 0.47, 0.45, ms, None, None,
+                 p1_kstats=k1, p2_kstats=None)
+    with open(tmp_log_dir / "match_snapshots.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["p1_bp_saved_num"] == "5"
+    assert rows[0]["p1_serve_rating"] == "191"
+    assert rows[0]["p1_k_aces"] == "3"
+    assert rows[0]["p1_k_unforced_fh"] == "7"
+    assert rows[0]["p2_k_aces"] == ""          # missing kstats degrade to blank
+    assert rows[0]["p2_bp_saved_num"] == ""    # missing hawkeye extras degrade to blank
+
 def test_timestamp_is_readable(tmp_log_dir):
     log_trade("TICK", "P1", "P2", "p1", "entry", 0.55, None, 0.65, 1.50, 0.03, None, 3.50)
     with open(tmp_log_dir / "trade_log.csv") as f:

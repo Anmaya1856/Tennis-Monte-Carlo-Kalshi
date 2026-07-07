@@ -238,6 +238,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         mc_prob, set_prob, game_prob,
         p1_ask, p1_bid, p2_ask, p2_bid,
         ms, pos_side, pos_value,
+        p1_kstats=kalshi_state.get("p1_kstats"), p2_kstats=kalshi_state.get("p2_kstats"),
     )
 
     server_name = p1_name if kalshi_state["p1_serves"] else p2_name

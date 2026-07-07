@@ -69,6 +69,13 @@ def _player_stats(sets_array):
         "win_second_num":     ws_d,  "win_second_den":      ws_n,
         "return_first_num":   rf_d,  "return_first_den":   rf_n,
         "return_second_num":  rs_d,  "return_second_den":  rs_n,
+        # extras logged for the break-point research dataset (not used by the sim)
+        "bp_saved_num":       _raw(svc.get("BreakPointsSaved") or {})[0],
+        "bp_saved_den":       _raw(svc.get("BreakPointsSaved") or {})[1],
+        "bp_conv_num":        _raw(ret.get("BreakPointsConverted") or {})[0],
+        "bp_conv_den":        _raw(ret.get("BreakPointsConverted") or {})[1],
+        "serve_rating":       (svc.get("ServeRating") or {}).get("Number"),
+        "return_rating":      (ret.get("ReturnRating") or {}).get("Number"),
     }
 
 
@@ -92,7 +99,7 @@ def stats_ready(stats):
     """False if any stat's num/den is missing, num is negative, or den <= 2."""
     for key in _STAT_KEYS:
         num, den = stats.get(f"{key}_num"), stats.get(f"{key}_den")
-        if num is None or den is None or num < 0 or den <= 2:
+        if num is None or den is None or num < 0 or den < 2:
             return False
     return True
 
