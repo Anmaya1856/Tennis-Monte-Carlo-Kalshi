@@ -1,2 +1,0 @@
-timestamp,ticker,p1_name,p2_name,direction,event,entry_price,exit_price,mc_prob_at_entry,bet_amount,fee,pnl,budget_remaining
-2026-07-01T04:12:35.391847+00:00,KXATPCHALLENGERMATCH-26JUN30SURDRA-DRA,Liam Draxl,Dhakshineswar Suresh,no,entry,0.89,,0.0251,0.4774,0.0,,4.5226
