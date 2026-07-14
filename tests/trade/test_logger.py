@@ -90,6 +90,21 @@ def test_snapshot_logs_bp_research_columns(tmp_log_dir):
     assert rows[0]["p2_k_aces"] == ""          # missing kstats degrade to blank
     assert rows[0]["p2_bp_saved_num"] == ""    # missing hawkeye extras degrade to blank
 
+def test_snapshot_logs_dp_report_columns(tmp_log_dir):
+    from trade.exact import match_report
+    ms = MatchState(budget_remaining=5.0)
+    p1 = _stats(0.6, 0.72, 0.5, 0.28, 0.48); p2 = _stats(0.6, 0.68, 0.48, 0.30, 0.46)
+    rep = match_report(0.66, 0.60, "6-3 2-2", "0-0", True, 3, cfg.GAME_THRESHOLDS)
+    log_snapshot("TICK", "P1", "P2", "6-3 2-2", "0-0", "p1", p1, p2, 6, 4,
+                 0.7, 0.6, 0.8, 0.62, 0.61, 0.40, 0.39, ms, None, None, report=rep)
+    with open(tmp_log_dir / "match_snapshots.csv") as f:
+        row = list(csv.DictReader(f))[0]
+    assert row["sc_p1_d0"] != "" and float(row["sc_p1_d0"]) >= 0
+    assert row["p1_set1"] == "1.0"          # p1 already won set 1
+    assert row["p1_set4"] == ""             # Bo3 -> set 4 not applicable
+    col = f"p_games_over_{str(cfg.GAME_THRESHOLDS[0]).replace('.', '_')}"
+    assert 0 <= float(row[col]) <= 1
+
 def test_timestamp_is_readable(tmp_log_dir):
     log_trade("TICK", "P1", "P2", "p1", "entry", 0.55, None, 0.65, 1.50, 0.03, None, 3.50)
     with open(tmp_log_dir / "trade_log.csv") as f:

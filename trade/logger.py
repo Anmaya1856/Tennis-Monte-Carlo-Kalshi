@@ -1,6 +1,8 @@
 import csv, os, datetime
 import trade.config as cfg
 
+_GAMES_COLS = [f"p_games_over_{str(t).replace('.', '_')}" for t in cfg.GAME_THRESHOLDS]
+
 _TRADE_COLS = [
     "timestamp", "ticker", "p1_name", "p2_name", "direction", "event",
     "entry_price", "exit_price", "mc_prob_at_entry", "bet_amount",
@@ -14,6 +16,13 @@ _SNAPSHOT_COLS = [
     "position_side", "position_entry_price", "position_count", "position_high_water",
     "position_current_value", "position_unrealized_pnl", "budget_remaining",
     "divergence_ema", "standdown",
+    # market-implied prior (live model) + career shadow model
+    "prematch_price", "pa0", "pb0", "pa_blend", "pb_blend", "career_prob_p1",
+    # derived DP distributions (point estimate; forward-looking from current score)
+    "sc_p1_d0", "sc_p1_d1", "sc_p1_d2", "sc_p2_d0", "sc_p2_d1", "sc_p2_d2",
+    "p1_set1", "p2_set1", "p1_set2", "p2_set2", "p1_set3", "p2_set3",
+    "p1_set4", "p2_set4", "p1_set5", "p2_set5",
+    *_GAMES_COLS,
     "p1_first_serve_pct",    "p1_first_serve_num",    "p1_first_serve_den",
     "p1_first_serve_won_pct","p1_first_serve_won_num","p1_first_serve_won_den",
     "p1_second_serve_won_pct","p1_second_serve_won_num","p1_second_serve_won_den",
@@ -86,10 +95,29 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
                  p1_stats, p2_stats, p1_last10, p2_last10,
                  mc_prob_p1, mc_set_prob_p1, mc_game_prob_p1,
                  p1_ask, p1_bid, p2_ask, p2_bid,
-                 ms, pos_side, pos_value, p1_kstats=None, p2_kstats=None):
+                 ms, pos_side, pos_value, p1_kstats=None, p2_kstats=None,
+                 prematch_price=None, pa0=None, pb0=None, pa_blend=None, pb_blend=None,
+                 career_prob_p1=None, report=None):
     """ms: MatchState for this match; pos_side/pos_value: 'p1'/'p2' and owned-market
-    bid when a position is open, else None. p1_kstats/p2_kstats: Kalshi shot-level dicts."""
+    bid when a position is open, else None. p1_kstats/p2_kstats: Kalshi shot-level dicts.
+    prematch/pa/pb/career: live market-prior inputs + career shadow-model probability.
+    report: exact.match_report() dict (scorelines/set_win/over_games), or None."""
     pos = ms.position
+    market = {"prematch_price": prematch_price, "pa0": pa0, "pb0": pb0,
+              "pa_blend": pa_blend, "pb_blend": pb_blend, "career_prob_p1": career_prob_p1}
+    market = {k: ("" if v is None else v) for k, v in market.items()}
+    rep = {}
+    sc = (report or {}).get("scorelines", {})
+    sw = (report or {}).get("set_win", [])
+    og = (report or {}).get("over_games", {})
+    for pl in ("p1", "p2"):
+        for dd in (0, 1, 2):
+            rep[f"sc_{pl}_d{dd}"] = round(sc.get((pl, dd), 0.0), 4) if report else ""
+    for i in range(5):
+        rep[f"p1_set{i+1}"] = round(sw[i][0], 4) if (report and i < len(sw)) else ""
+        rep[f"p2_set{i+1}"] = round(sw[i][1], 4) if (report and i < len(sw)) else ""
+    for t, col in zip(cfg.GAME_THRESHOLDS, _GAMES_COLS):
+        rep[col] = round(og.get(t, 0.0), 4) if report else ""
     extras = {}
     for p, stats in (("p1", p1_stats), ("p2", p2_stats)):
         for k in _HAWKEYE_EXTRAS:
@@ -99,6 +127,8 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
             extras[f"{p}_k_{k}"] = (ks or {}).get(k, "")
     _append("match_snapshots.csv", _SNAPSHOT_COLS, {
         **extras,
+        **market,
+        **rep,
         "timestamp":                  _now_str(),
         "ticker":                     ticker,
         "p1_name":                    p1_name,

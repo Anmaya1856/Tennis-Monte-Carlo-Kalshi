@@ -2,14 +2,14 @@ import datetime, os
 
 # Trading parameters
 MATCH_BUDGET      = 5.00
-EDGE_MIN = 0.02   # entry edge required at the price extremes (raise to ~0.03 before going live: fees+spread)
-EDGE_MAX = 0.13   # entry edge required at 50c; threshold = EDGE_MIN + (EDGE_MAX-EDGE_MIN)*sin(pi*price)
+EDGE_MIN = 0.01   # entry edge required at the price extremes (raise to ~0.03 before going live: fees+spread)
+EDGE_MAX = 0.07   # entry edge required at 50c; threshold = EDGE_MIN + (EDGE_MAX-EDGE_MIN)*sin(pi*price)
 EDGE_MIN_UNDERDOG = 0.06  # floor on the entry edge for cheap markets (longshots are usually overpriced)
 UNDERDOG_PRICE    = 0.25  # the floor applies below this price
 TRAIL_SCALE_FRAC  = 0.35  # trail arm/giveback capped at this fraction of entry (fixes penny positions)
 STOP_MAX_FRAC     = 0.50  # stop distance capped at this fraction of entry
-DIVERGENCE_PAUSE      = 0.18  # pause entries when |model-market| EMA exceeds this
-DIVERGENCE_RESUME     = 0.10  # resume entries when the EMA falls back below this
+DIVERGENCE_PAUSE      = 0.20  # pause entries when |model-market| EMA exceeds this
+DIVERGENCE_RESUME     = 0.15  # resume entries when the EMA falls back below this
 DIVERGENCE_EMA_ALPHA  = 0.05  # per-sim EMA weight (~15-20 min memory at one sim per point)
 STOP_LOSS_PCT     = 0.15
 STOP_LOSS_MIN_DOLLARS = 0.04  # stop distance is max(STOP_LOSS_PCT * entry, this floor)
@@ -25,10 +25,16 @@ SIM_RETRY_SECS    = 15   # min gap between Hawkeye retries after a failed sim (p
 ATP_LAG_RETRY_SECS    = 2    # retry gap when Hawkeye stats lag the Kalshi score change
 ATP_LAG_MAX_WAIT_SECS = 10   # after this long waiting for fresh stats, sim with what we have
 N_SIMS            = 50_000  
-N_DRAWS           = 500     # stat draws for the exact engine; each draw evaluated exactly
+N_DRAWS           = 1000     # stat draws for the exact engine; each draw evaluated exactly
 DRY_RUN           = True
 
-# Career-stat prior (identity anchor)
+# Market-implied prior (live model): invert the pre-match Kalshi price into
+# per-server point probs, then blend with in-match service counts.
+MARKET_PRIOR_N = 40       # market-implied point probs worth this many virtual service points
+INVERSION_BASE = 0.64     # assumed tour-average serve level; fixes the overall level in the inversion
+GAME_THRESHOLDS = [33.5, 38.5, 43.5]  # log P(total match games > X) for each; changeable
+
+# Career-stat prior (shadow model, logged for A/B comparison; not traded on)
 PRIOR_N  = 20             # career stats worth this many virtual points per stat
 SURFACE  = "Grass"        # default surface for career lookups; override per match with "surface"
 ATP_DB   = "atp/data/atp.db"
@@ -48,33 +54,15 @@ LOG_SUFFIX = datetime.datetime.now().strftime("_%Y%m%d_%H%M%S")
 # Each entry: hawkeye_url, event_ticker, and optional budget (dollars; defaults to MATCH_BUDGET)
 # milestone_id, canonical ticker, and p1 identity are all resolved automatically.
 MATCH_CONFIG = [
-    # {
-    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7316/ms002",
-    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL04LEGWIN",
-    #     "budget": 5.00,
-    #     "surface": "Hard",
-    # },
-    # {
-    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7389/ms021",
-    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL06ABOALVA",
-    #     "budget": 5.00,
-    #     "surface": "Clay",
-    # },
-    # {
-    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/7389/ms020",
-    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL06VARFER",
-    #     "budget": 5.00,
-    #     "surface": "Clay",
-    # },
     {
-        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/540/ms004",
-        "event_ticker": "KXATPMATCH-26JUL07SINSTR",
+        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/2941/ms021",
+        "event_ticker": "KXATPCHALLENGERMATCH-26JUL13KENSHE",
         "budget": 5.00,
         "surface": "Grass",
     },
     # {
-    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/540/ms009",
-    #     "event_ticker": "KXATPMATCH-26JUL05HURSTR",
+    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/2120/qs027",
+    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL12FUEROS",
     #     "budget": 5.00,
     #     "surface": "Grass",
     # },

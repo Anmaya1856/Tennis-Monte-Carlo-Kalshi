@@ -13,8 +13,10 @@ import trade.config as cfg
 from trade.atp_client    import fetch_match_state, stats_ready
 from trade.kalshi_client import (get_best_ask_bid, place_order, close_position,
                                   fetch_milestone, fetch_milestone_id,
-                                  get_event_competitor_map, parse_milestone_state)
-from trade.simulation    import estimate_win_prob
+                                  get_event_competitor_map, parse_milestone_state,
+                                  fetch_prematch_price)
+from trade.exact         import (estimate_win_prob, estimate_win_prob_market,
+                                  implied_point_probs, match_report)
 from trade               import career
 from trade.state         import MatchStateStore
 from trade.decision      import (compute_entry, edge_threshold, should_stop_loss,
@@ -50,9 +52,9 @@ def _pos_player(cached, pos):
 
 
 def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
-                server_name, p1_stats, p2_stats, p1_blend, p2_blend,
+                server_name, p1_stats, p2_stats, mkt,
                 mc_prob, game_prob, set_prob,
-                p1_ask, p1_bid, p2_ask, p2_bid, best_of, ms):
+                p1_ask, p1_bid, p2_ask, p2_bid, best_of, ms, report=None):
     ts   = datetime.datetime.now().strftime("%H:%M:%S")
     sep  = "─" * 62
     mode = "DRY RUN" if cfg.DRY_RUN else "LIVE"
@@ -74,11 +76,6 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
                 f"2nd-won {s['win_second']*100:3.0f}%  ret-1st {s['return_first']*100:3.0f}%  "
                 f"ret-2nd {s['return_second']*100:3.0f}%")
 
-    def prior_wt(s):
-        dens = [s[k + "_den"] for k in ("first_in", "win_first", "win_second",
-                                        "return_first", "return_second")]
-        return sum(cfg.PRIOR_N / (cfg.PRIOR_N + d) for d in dens) / len(dens)
-
     pos_line = "  No position"
     if ms.position:
         pos     = ms.position
@@ -95,6 +92,28 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
     if ms.cooldown_until and time.time() < ms.cooldown_until:
         budget_line += f"  |  Cooldown: {int(ms.cooldown_until - time.time())}s left"
 
+    dist_block = ""
+    if report:
+        need = best_of // 2 + 1
+        sc = report["scorelines"]
+        p1sc = "  ".join(f"{need}-{d} {sc[('p1', d)]*100:.0f}%"
+                         for d in range(need) if sc.get(("p1", d), 0) >= 0.005)
+        p2sc = "  ".join(f"{need}-{d} {sc[('p2', d)]*100:.0f}%"
+                         for d in range(need) if sc.get(("p2", d), 0) >= 0.005)
+        sets = []
+        for i, (a, b) in enumerate(report["set_win"][:best_of]):
+            if a + b < 1e-6:
+                continue
+            tag = f"({(a+b)*100:.0f}% pl)" if a + b < 0.999 else ""
+            sets.append(f"S{i+1} P1 {a*100:.0f}%{tag}")
+        games = "  ".join(f">{t} {p*100:.0f}%" for t, p in sorted(report["over_games"].items()))
+        dist_block = (
+            f"  Scorelines:  P1 {p1sc or '—'}   |   P2 {p2sc or '—'}\n"
+            f"  Per set:     {'  '.join(sets)}\n"
+            f"  Total games: {games}\n"
+            f"\n"
+        )
+
     print(
         f"\n{sep}\n"
         f"  [{ts}]  {evk}  [{mode}]  Best of {best_of}\n"
@@ -104,11 +123,13 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
         f"{prob_row('P1', p1_name, game_prob, set_prob, mc_prob, p1_ask, p1_bid)}\n"
         f"{prob_row('P2', p2_name, 1 - game_prob, 1 - set_prob, 1 - mc_prob, p2_ask, p2_bid)}\n"
         f"\n"
-        f"  P1 raw    :  {stat_cells(p1_stats)}\n"
-        f"  P1 blended:  {stat_cells(p1_blend)}   (prior wt {prior_wt(p1_stats)*100:.0f}%)\n"
-        f"  P2 raw    :  {stat_cells(p2_stats)}\n"
-        f"  P2 blended:  {stat_cells(p2_blend)}   (prior wt {prior_wt(p2_stats)*100:.0f}%)\n"
+        f"  P1 raw:  {stat_cells(p1_stats)}\n"
+        f"  P2 raw:  {stat_cells(p2_stats)}\n"
+        f"  pA {mkt['pa_blend']:.3f} (mkt {mkt['pa0']:.3f}, wt {mkt['wt_a']*100:.0f}%)"
+        f"   pB {mkt['pb_blend']:.3f} (mkt {mkt['pb0']:.3f}, wt {mkt['wt_b']*100:.0f}%)"
+        f"   |  career model P1 {mkt['career_prob_p1']*100:.1f}%\n"
         f"\n"
+        f"{dist_block}"
         f"{pos_line}\n"
         f"{budget_line}\n"
         f"{sep}"
@@ -126,6 +147,13 @@ def _init_event(event_ticker):
     if milestone_id is None:
         print(f"[init] FAILED: no milestone found for {event_ticker}")
         return None
+    # Tournament-outright events list one market per player; keep only the two
+    # live markets (the current match). Normal match events have exactly two.
+    active = {cid: info for cid, info in event_map.items() if info.get("status") == "active"}
+    if len(active) != 2:
+        print(f"[init] FAILED: expected 2 active markets, got {len(active)} for {event_ticker}")
+        return None
+    event_map = active
     # p1 = alphabetically first market ticker
     tickers   = sorted(info["ticker"] for info in event_map.values())
     p1_ticker, p2_ticker = tickers[0], tickers[1]
@@ -144,6 +172,9 @@ def _init_event(event_ticker):
         "best_of":          None,
         "p1_career":        None,
         "p2_career":        None,
+        "pa0":              None,
+        "pb0":              None,
+        "prematch_price":   None,
     }
     p2_name_k = next(info["name"] for info in event_map.values() if info["ticker"] == p2_ticker)
     print(f"[init] OK  {event_ticker.rsplit('-', 1)[-1]}  "
@@ -186,7 +217,23 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         print(f"[poll] ATP stats lag Kalshi score ({cached['p1_ticker']}); retrying")
         return "stale"
 
-    # Resolve career priors once per match (needs the aligned ATP names)
+    cached["best_of"] = atp["best_of"]
+
+    # Resolve the market-implied prior once per match (needs best_of).
+    if cached["pa0"] is None:
+        series = mc["event_ticker"].split("-")[0]
+        est_start = time.time() - total_points * 45 - 300
+        px = fetch_prematch_price(cached["p1_ticker"], series, est_start)
+        cached["prematch_price"] = px
+        if px is not None and 0.02 < px < 0.98:
+            cached["pa0"], cached["pb0"] = implied_point_probs(px, atp["best_of"])
+            print(f"[prior] {cached['p1_ticker']}: pre-match {px:.3f} -> "
+                  f"pA0 {cached['pa0']:.3f} / pB0 {cached['pb0']:.3f}")
+        else:
+            cached["pa0"] = cached["pb0"] = cfg.INVERSION_BASE
+            print(f"[prior] {cached['p1_ticker']}: no pre-match price -> neutral {cfg.INVERSION_BASE}")
+
+    # Resolve career stats once per match (shadow model only — logged, not traded).
     if cached["p1_career"] is None:
         surface = mc.get("surface", cfg.SURFACE)
         cached["p1_career"] = career.lookup(p1_name, surface)
@@ -196,19 +243,35 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
             print(f"[career] {nm}: {src}  " +
                   "  ".join(f"{k}={v*100:.0f}%" for k, v in c.items()))
 
-    p1_blend = career.blend(p1_stats, cached["p1_career"])
-    p2_blend = career.blend(p2_stats, cached["p2_career"])
-    probs = estimate_win_prob(
-        p1_blend, p2_blend,
-        kalshi_state["score_str"],
-        kalshi_state["game_score_str"],
-        kalshi_state["p1_serves"],
-        atp["best_of"],
-        n_sims=cfg.N_SIMS,
+    # LIVE model: market-implied prior blended with in-match service counts.
+    wonA, playedA = p1_stats["win_first_num"] + p1_stats["win_second_num"], p1_stats["first_in_den"]
+    wonB, playedB = p2_stats["win_first_num"] + p2_stats["win_second_num"], p2_stats["first_in_den"]
+    probs = estimate_win_prob_market(
+        cached["pa0"], cached["pb0"], wonA, playedA, wonB, playedB,
+        kalshi_state["score_str"], kalshi_state["game_score_str"],
+        kalshi_state["p1_serves"], atp["best_of"],
     )
     mc_prob   = probs["match"]
     set_prob  = probs["set"]
     game_prob = probs["game"]
+
+    # SHADOW model: career prior (logged for A/B comparison, never traded on).
+    p1_blend = career.blend(p1_stats, cached["p1_career"])
+    p2_blend = career.blend(p2_stats, cached["p2_career"])
+    career_prob_p1 = estimate_win_prob(
+        p1_blend, p2_blend,
+        kalshi_state["score_str"], kalshi_state["game_score_str"],
+        kalshi_state["p1_serves"], atp["best_of"],
+    )["match"]
+
+    # Derived DP distributions (scorelines / per-set / total-games) — logged only.
+    # target_match=mc_prob makes them an exact decomposition of the traded match prob.
+    report = match_report(
+        probs["pa_blend"], probs["pb_blend"],
+        kalshi_state["score_str"], kalshi_state["game_score_str"],
+        kalshi_state["p1_serves"], atp["best_of"], cfg.GAME_THRESHOLDS,
+        target_match=mc_prob,
+    )
 
     _store.update_mc_prob(key, mc_prob, game_prob)
     _store.record_sim(key, score_key, total_points)
@@ -224,7 +287,6 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
             print(f"[standdown] {key}: divergence EMA {ema:.2f} < {cfg.DIVERGENCE_RESUME} — entries resumed")
     cached["p1_name"] = p1_name
     cached["p2_name"] = p2_name
-    cached["best_of"] = atp["best_of"]
 
     pos      = ms.position
     pos_side = _pos_player(cached, pos) if pos else None
@@ -239,15 +301,21 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         p1_ask, p1_bid, p2_ask, p2_bid,
         ms, pos_side, pos_value,
         p1_kstats=kalshi_state.get("p1_kstats"), p2_kstats=kalshi_state.get("p2_kstats"),
+        prematch_price=cached["prematch_price"], pa0=cached["pa0"], pb0=cached["pb0"],
+        pa_blend=probs["pa_blend"], pb_blend=probs["pb_blend"], career_prob_p1=career_prob_p1,
+        report=report,
     )
 
     server_name = p1_name if kalshi_state["p1_serves"] else p2_name
+    mkt = {"pa0": cached["pa0"], "pb0": cached["pb0"], "pa_blend": probs["pa_blend"],
+           "pb_blend": probs["pb_blend"], "wt_a": probs["wt_a"], "wt_b": probs["wt_b"],
+           "career_prob_p1": career_prob_p1}
     _print_poll(cached, p1_name, p2_name,
                 kalshi_state["score_str"], kalshi_state["game_score_str"],
-                server_name, p1_stats, p2_stats, p1_blend, p2_blend,
+                server_name, p1_stats, p2_stats, mkt,
                 mc_prob, game_prob, set_prob,
                 p1_ask, p1_bid, p2_ask, p2_bid, atp["best_of"],
-                _store.get_or_create(key))
+                _store.get_or_create(key), report=report)
     return True
 
 

@@ -40,6 +40,46 @@ def _fetch_orderbook(ticker):
         return None
 
 
+def _cval(d, key):
+    """Read a candle price field from either schema ('{key}_dollars' or '{key}')."""
+    if not d:
+        return None
+    v = d.get(f"{key}_dollars", d.get(key))
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _candle_price(c):
+    bid, ask = _cval(c.get("yes_bid"), "close"), _cval(c.get("yes_ask"), "close")
+    if bid and ask and 0 < bid < 1 and 0 < ask < 1 and (ask - bid) <= 0.10:
+        return (bid + ask) / 2
+    tr = _cval(c.get("price") or {}, "close")
+    return tr if tr and 0 < tr < 1 else None
+
+
+def fetch_prematch_price(ticker, series, est_start_ts):
+    """Last clean two-sided candle price before the match started, or None.
+    est_start_ts: unix seconds, an estimate of when play began."""
+    params = {"start_ts": int(est_start_ts - 30 * 3600),
+              "end_ts": int(est_start_ts), "period_interval": 1}
+    for base in (cfg.KALSHI_BASE, "https://api.elections.kalshi.com"):
+        for tail in (f"/trade-api/v2/series/{series}/markets/{ticker}/candlesticks",
+                     f"/trade-api/v2/historical/markets/{ticker}/candlesticks"):
+            try:
+                r = requests.get(base + tail, params=params, timeout=10)
+                if not r.ok:
+                    continue
+                for c in reversed(r.json().get("candlesticks", [])):
+                    px = _candle_price(c)
+                    if px is not None:
+                        return px
+            except Exception:
+                continue
+    return None
+
+
 def get_best_ask_bid(ticker):
     """Return (best_yes_ask, best_yes_bid) in dollars, or (None, None)."""
     ob_data = _fetch_orderbook(ticker)
@@ -199,6 +239,7 @@ def get_event_competitor_map(event_ticker):
             m["custom_strike"]["tennis_competitor"]: {
                 "name":   m["yes_sub_title"],
                 "ticker": m["ticker"],
+                "status": m.get("status"),
             }
             for m in markets
         }
