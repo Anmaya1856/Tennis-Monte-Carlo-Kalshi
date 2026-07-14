@@ -3,3 +3,6 @@ kalshi/data/kalshi_candles.db
 .claude/settings.local.json
 Key1.txt
 __pycache__/
+.superpowers
+docs/
+data
