@@ -194,6 +194,48 @@ def test_parse_milestone_state_null_statistics():
     assert state["p1_last10"] is None
     assert state["p2_last10"] is None
 
+def _serve(fss, sss, fspw, sspw, spw, spl):
+    return {"first_serve_successful": fss, "second_serve_successful": sss,
+            "first_serve_points_won": fspw, "second_serve_points_won": sspw,
+            "service_points_won": spw, "service_points_lost": spl}
+
+
+def test_parse_milestone_state_serve_stats_oriented():
+    from trade.kalshi_client import parse_milestone_state
+    details = dict(_MILESTONE_DETAILS,
+                   competitor1_statistics=_serve(9, 6, 6, 3, 9, 6),
+                   competitor2_statistics=_serve(20, 5, 15, 4, 19, 3))
+    st = parse_milestone_state(details, "comp-b")   # p1 = competitor2
+    p1 = st["p1_stats"]
+    assert p1["first_in_den"] == 22                 # service_points_won + lost = 19 + 3
+    assert p1["win_first_num"] == 15 and p1["win_first_den"] == 20
+    assert p1["win_second_num"] == 4 and p1["win_second_den"] == 5
+    # engine uses win_first_num + win_second_num as service points won == service_points_won
+    assert p1["win_first_num"] + p1["win_second_num"] == 19
+    assert st["p2_stats"]["first_in_den"] == 15     # 9 + 6
+
+
+def test_serve_stats_ready_true_and_false():
+    from trade.kalshi_client import parse_milestone_state, serve_stats_ready
+    live = parse_milestone_state(
+        dict(_MILESTONE_DETAILS,
+             competitor1_statistics=_serve(9, 6, 6, 3, 9, 6),
+             competitor2_statistics=_serve(9, 6, 6, 3, 9, 6)), "comp-a")
+    assert serve_stats_ready(live["p1_stats"]) is True
+    nul = parse_milestone_state(
+        dict(_MILESTONE_DETAILS, competitor1_statistics=None, competitor2_statistics=None), "comp-a")
+    assert serve_stats_ready(nul["p1_stats"]) is False
+
+
+def test_fetch_best_of():
+    resp = {"milestone": {"details": {"best_of": "5"}}}
+    with patch("trade.kalshi_client.requests.get") as mock_get:
+        mock_get.return_value.ok = True
+        mock_get.return_value.json.return_value = resp
+        from trade.kalshi_client import fetch_best_of
+        assert fetch_best_of("mid-123") == 5
+
+
 def test_parse_milestone_state_tiebreak():
     from trade.kalshi_client import parse_milestone_state
     details = dict(_MILESTONE_DETAILS)

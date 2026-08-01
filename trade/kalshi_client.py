@@ -213,6 +213,20 @@ _GAME_SCORE_MAP = {0: 0, 15: 1, 30: 2, 40: 3, 50: 4}
 _INT_TO_NOTATION = {0: '0', 1: '15', 2: '30', 3: '40', 4: 'Ad'}
 
 
+def fetch_best_of(milestone_id):
+    """GET /milestones/{id} (static match metadata). Returns best_of as int, or None.
+    Separate endpoint from the live-data poll; called once per match at init."""
+    url = f"{cfg.KALSHI_BASE}/trade-api/v2/milestones/{milestone_id}"
+    try:
+        resp = requests.get(url, timeout=5)
+        if not resp.ok:
+            return None
+        bo = resp.json()["milestone"]["details"].get("best_of")
+        return int(bo) if bo is not None else None
+    except Exception:
+        return None
+
+
 def fetch_milestone(milestone_id):
     """GET /live_data/milestone/{id} (public). Returns details dict or None if not live."""
     url = f"{cfg.KALSHI_BASE}/trade-api/v2/live_data/milestone/{milestone_id}"
@@ -296,6 +310,9 @@ def parse_milestone_state(details, p1_competitor_id):
     p1_last10 = c1_stats.get("points_won_from_last_10") if p1_is_comp1 else c2_stats.get("points_won_from_last_10")
     p2_last10 = c2_stats.get("points_won_from_last_10") if p1_is_comp1 else c1_stats.get("points_won_from_last_10")
 
+    p1_stats = _serve_stats(c1_stats if p1_is_comp1 else c2_stats)
+    p2_stats = _serve_stats(c2_stats if p1_is_comp1 else c1_stats)
+
     def _kstats(s):
         """Shot-level stats logged for the break-point research dataset."""
         return {
@@ -319,8 +336,48 @@ def parse_milestone_state(details, p1_competitor_id):
         "game_score_str": game_score_str,
         "p1_serves":      p1_serves,
         "is_live":        is_live,
+        "p1_stats":       p1_stats,
+        "p2_stats":       p2_stats,
         "p1_last10":      p1_last10,
         "p2_last10":      p2_last10,
         "p1_kstats":      p1_kstats,
         "p2_kstats":      p2_kstats,
     }
+
+
+def _serve_stats(s):
+    """Per-player serve stats in the shape the sim/logger expect, built from Kalshi
+    competitor_statistics. Kalshi doesn't split the return side by serve or provide
+    ratings, so those keys are None — the traded model uses only the serve counts."""
+    s = s or {}
+    fss  = s.get("first_serve_successful")     # first serves in
+    sss  = s.get("second_serve_successful")    # second serves in
+    fspw = s.get("first_serve_points_won")
+    sspw = s.get("second_serve_points_won")
+    spw  = s.get("service_points_won")
+    spl  = s.get("service_points_lost")
+    total = (spw + spl) if (spw is not None and spl is not None) else None
+
+    def rate(n, d):
+        return (n / d) if (n is not None and d) else None
+
+    return {
+        "first_in":          rate(fss, total),
+        "win_first":         rate(fspw, fss),
+        "win_second":        rate(sspw, sss),
+        "return_first":      None,
+        "return_second":     None,
+        "first_in_num":      fss,   "first_in_den":      total,
+        "win_first_num":     fspw,  "win_first_den":     fss,
+        "win_second_num":    sspw,  "win_second_den":    sss,
+        "return_first_num":  None,  "return_first_den":  None,
+        "return_second_num": None,  "return_second_den": None,
+    }
+
+
+def serve_stats_ready(stats):
+    """True when the serve counts the sim needs are present and non-trivial."""
+    den = stats.get("first_in_den")
+    if den is None or den < 2:
+        return False
+    return stats.get("win_first_num") is not None and stats.get("win_second_num") is not None

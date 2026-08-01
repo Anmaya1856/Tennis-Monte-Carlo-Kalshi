@@ -7,17 +7,15 @@ Set MATCH_CONFIG in config.py with at least one entry before running.
 Usage:
     python -m trade.trade_bot
 """
-import datetime, re, sys, time, unicodedata
+import datetime, sys, time
 
 import trade.config as cfg
-from trade.atp_client    import fetch_match_state, stats_ready
 from trade.kalshi_client import (get_best_ask_bid, place_order, close_position,
-                                  fetch_milestone, fetch_milestone_id,
+                                  fetch_milestone, fetch_milestone_id, fetch_best_of,
                                   get_event_competitor_map, parse_milestone_state,
-                                  fetch_prematch_price)
-from trade.exact         import (estimate_win_prob, estimate_win_prob_market,
+                                  serve_stats_ready, fetch_prematch_price)
+from trade.exact         import (estimate_win_prob_market,
                                   implied_point_probs, match_report)
-from trade               import career
 from trade.state         import MatchStateStore
 from trade.decision      import (compute_entry, edge_threshold, should_stop_loss,
                                   should_take_profit, should_trail_exit)
@@ -33,18 +31,9 @@ _store = MatchStateStore()
 #                 (last three filled on first successful sim)
 _match_cache = {}
 
-# event_ticker → {"score_key", "ts", "stale_since"} of the last sim attempt.
-# Throttles Hawkeye retries: failed sims (stats not ready / ATP down) wait
-# SIM_RETRY_SECS; stale-stats sims (Hawkeye lagging the Kalshi score) retry
-# after ATP_LAG_RETRY_SECS and are force-accepted after ATP_LAG_MAX_WAIT_SECS.
+# event_ticker → {"score_key", "ts"} of the last sim attempt. Throttles retries
+# when serve stats aren't ready yet (early in a match) by SIM_RETRY_SECS.
 _sim_attempts = {}
-
-
-def _norm(name):
-    """Normalize player name for fuzzy comparison: strip diacritics, lowercase, letters only."""
-    name = unicodedata.normalize("NFD", name)
-    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
-    return re.sub(r"[^a-z]", "", name.lower())
 
 
 def _pos_player(cached, pos):
@@ -54,7 +43,8 @@ def _pos_player(cached, pos):
 def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
                 server_name, p1_stats, p2_stats, mkt,
                 mc_prob, game_prob, set_prob,
-                p1_ask, p1_bid, p2_ask, p2_bid, best_of, ms, report=None):
+                p1_ask, p1_bid, p2_ask, p2_bid, best_of, ms, report=None,
+                vol_point=None, vol_game=None, cond=None):
     ts   = datetime.datetime.now().strftime("%H:%M:%S")
     sep  = "─" * 62
     mode = "DRY RUN" if cfg.DRY_RUN else "LIVE"
@@ -72,9 +62,11 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
                 f"  {ask:.3f}   {bid:.3f}   {edge_str(m - ask, ask)}")
 
     def stat_cells(s):
-        return (f"1st-in {s['first_in']*100:3.0f}%  1st-won {s['win_first']*100:3.0f}%  "
-                f"2nd-won {s['win_second']*100:3.0f}%  ret-1st {s['return_first']*100:3.0f}%  "
-                f"ret-2nd {s['return_second']*100:3.0f}%")
+        def pc(x):
+            return f"{x*100:3.0f}%" if x is not None else "  —"
+        return (f"1st-in {pc(s['first_in'])}  1st-won {pc(s['win_first'])}  "
+                f"2nd-won {pc(s['win_second'])}  ret-1st {pc(s['return_first'])}  "
+                f"ret-2nd {pc(s['return_second'])}")
 
     pos_line = "  No position"
     if ms.position:
@@ -91,6 +83,20 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
     budget_line = f"  Budget: ${ms.budget_remaining:.2f}"
     if ms.cooldown_until and time.time() < ms.cooldown_until:
         budget_line += f"  |  Cooldown: {int(ms.cooldown_until - time.time())}s left"
+
+    branch_line = ""
+    if cond is not None:
+        branch_line = (
+            f"  P1 match% branches (now {mc_prob*100:.1f}%):\n"
+            f"    this game:  win → {cond['win_game']*100:5.1f}%   lose → {cond['lose_game']*100:5.1f}%"
+            f"   (wins game {game_prob*100:.0f}%)\n"
+            f"    this set:   win → {cond['win_set']*100:5.1f}%   lose → {cond['lose_set']*100:5.1f}%"
+            f"   (wins set {set_prob*100:.0f}%)\n\n")
+
+    vol_line = ""
+    if vol_point is not None:
+        vol_line = (f"  Match vol:   next point ±{vol_point*100:.1f}pp"
+                    f"   this game ±{vol_game*100:.1f}pp\n\n")
 
     dist_block = ""
     if report:
@@ -126,9 +132,10 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
         f"  P1 raw:  {stat_cells(p1_stats)}\n"
         f"  P2 raw:  {stat_cells(p2_stats)}\n"
         f"  pA {mkt['pa_blend']:.3f} (mkt {mkt['pa0']:.3f}, wt {mkt['wt_a']*100:.0f}%)"
-        f"   pB {mkt['pb_blend']:.3f} (mkt {mkt['pb0']:.3f}, wt {mkt['wt_b']*100:.0f}%)"
-        f"   |  career model P1 {mkt['career_prob_p1']*100:.1f}%\n"
+        f"   pB {mkt['pb_blend']:.3f} (mkt {mkt['pb0']:.3f}, wt {mkt['wt_b']*100:.0f}%)\n"
         f"\n"
+        f"{branch_line}"
+        f"{vol_line}"
         f"{dist_block}"
         f"{pos_line}\n"
         f"{budget_line}\n"
@@ -157,67 +164,47 @@ def _init_event(event_ticker):
     # p1 = alphabetically first market ticker
     tickers   = sorted(info["ticker"] for info in event_map.values())
     p1_ticker, p2_ticker = tickers[0], tickers[1]
-    p1_cid = next(
-        cid for cid, info in event_map.items()
-        if info["ticker"] == p1_ticker
-    )
+    p1_cid = next(cid for cid, info in event_map.items() if info["ticker"] == p1_ticker)
+    p2_cid = next(cid for cid, info in event_map.items() if info["ticker"] == p2_ticker)
+    best_of = fetch_best_of(milestone_id) or 3
     cached = {
         "p1_ticker":        p1_ticker,
         "p2_ticker":        p2_ticker,
         "p1_competitor_id": p1_cid,
         "p1_name_kalshi":   event_map[p1_cid]["name"],
+        "p2_name_kalshi":   event_map[p2_cid]["name"],
         "milestone_id":     milestone_id,
+        "best_of":          best_of,
         "p1_name":          None,
         "p2_name":          None,
-        "best_of":          None,
-        "p1_career":        None,
-        "p2_career":        None,
         "pa0":              None,
         "pb0":              None,
         "prematch_price":   None,
     }
-    p2_name_k = next(info["name"] for info in event_map.values() if info["ticker"] == p2_ticker)
     print(f"[init] OK  {event_ticker.rsplit('-', 1)[-1]}  "
           f"P1 {event_map[p1_cid]['name']} ({p1_ticker})  vs  "
-          f"P2 {p2_name_k} ({p2_ticker})  milestone={milestone_id}")
+          f"P2 {event_map[p2_cid]['name']} ({p2_ticker})  Bo{best_of}  milestone={milestone_id}")
     return cached
 
 
-def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid,
-             accept_stale=False):
-    """Fetch ATP stats and re-run the MC sim. Updates store + cache, logs snapshot, prints dashboard.
-    Returns True on success, "stale" if Hawkeye stats lag the Kalshi score, False on failure."""
+def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid):
+    """Re-run the exact sim from Kalshi's live serve stats. Updates store + cache,
+    logs snapshot, prints dashboard. Returns True on success, False if stats aren't ready.
+
+    Score, server, and serve stats all come from the same Kalshi milestone payload —
+    so the two-source lag the old Hawkeye path guarded against can't happen here."""
     key = mc["event_ticker"]
 
-    atp = fetch_match_state(mc["hawkeye_url"])
-    if atp is None:
-        print(f"[poll] ATP stats unavailable ({mc['hawkeye_url']})")
+    # Kalshi supplies per-competitor serve stats already oriented to p1/p2.
+    p1_stats, p2_stats = kalshi_state["p1_stats"], kalshi_state["p2_stats"]
+    if not (serve_stats_ready(p1_stats) and serve_stats_ready(p2_stats)):
+        print(f"[poll] serve stats not ready yet ({cached['p1_ticker']})")
         return False
 
-    # Align: if Hawkeye Team1 ≠ Kalshi p1, swap stats
-    if _norm(atp["p1_name"]) == _norm(cached["p1_name_kalshi"]):
-        p1_stats, p2_stats = atp["p1_stats"], atp["p2_stats"]
-        p1_name, p2_name   = atp["p1_name"],  atp["p2_name"]
-    else:
-        p1_stats, p2_stats = atp["p2_stats"], atp["p1_stats"]
-        p1_name, p2_name   = atp["p2_name"],  atp["p1_name"]
-
-    if not (stats_ready(p1_stats) and stats_ready(p2_stats)):
-        print(f"[poll] stats not ready yet ({cached['p1_ticker']})")
-        return False
-
-    # Freshness check: a score change means a point was played, so the Hawkeye
-    # point count must have grown since the last sim — otherwise ATP hasn't
-    # reflected the new point yet and we'd sim the new score with old stats.
+    p1_name, p2_name = cached["p1_name_kalshi"], cached["p2_name_kalshi"]
+    best_of = cached["best_of"]
     ms = _store.get_or_create(key)
     total_points = p1_stats["first_in_den"] + p2_stats["first_in_den"]
-    if (not accept_stale
-            and score_key != ms.last_sim_score
-            and total_points <= ms.last_sim_total_points):
-        print(f"[poll] ATP stats lag Kalshi score ({cached['p1_ticker']}); retrying")
-        return "stale"
-
-    cached["best_of"] = atp["best_of"]
 
     # Resolve the market-implied prior once per match (needs best_of).
     if cached["pa0"] is None:
@@ -226,22 +213,12 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         px = fetch_prematch_price(cached["p1_ticker"], series, est_start)
         cached["prematch_price"] = px
         if px is not None and 0.02 < px < 0.98:
-            cached["pa0"], cached["pb0"] = implied_point_probs(px, atp["best_of"])
+            cached["pa0"], cached["pb0"] = implied_point_probs(px, best_of)
             print(f"[prior] {cached['p1_ticker']}: pre-match {px:.3f} -> "
                   f"pA0 {cached['pa0']:.3f} / pB0 {cached['pb0']:.3f}")
         else:
             cached["pa0"] = cached["pb0"] = cfg.INVERSION_BASE
             print(f"[prior] {cached['p1_ticker']}: no pre-match price -> neutral {cfg.INVERSION_BASE}")
-
-    # Resolve career stats once per match (shadow model only — logged, not traded).
-    if cached["p1_career"] is None:
-        surface = mc.get("surface", cfg.SURFACE)
-        cached["p1_career"] = career.lookup(p1_name, surface)
-        cached["p2_career"] = career.lookup(p2_name, surface)
-        for nm, c in ((p1_name, cached["p1_career"]), (p2_name, cached["p2_career"])):
-            src = "NEUTRAL fallback" if c == career.neutral_for(surface) else f"{surface} career"
-            print(f"[career] {nm}: {src}  " +
-                  "  ".join(f"{k}={v*100:.0f}%" for k, v in c.items()))
 
     # LIVE model: market-implied prior blended with in-match service counts.
     wonA, playedA = p1_stats["win_first_num"] + p1_stats["win_second_num"], p1_stats["first_in_den"]
@@ -249,32 +226,23 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     probs = estimate_win_prob_market(
         cached["pa0"], cached["pb0"], wonA, playedA, wonB, playedB,
         kalshi_state["score_str"], kalshi_state["game_score_str"],
-        kalshi_state["p1_serves"], atp["best_of"],
+        kalshi_state["p1_serves"], best_of,
     )
     mc_prob   = probs["match"]
     set_prob  = probs["set"]
     game_prob = probs["game"]
-
-    # SHADOW model: career prior (logged for A/B comparison, never traded on).
-    p1_blend = career.blend(p1_stats, cached["p1_career"])
-    p2_blend = career.blend(p2_stats, cached["p2_career"])
-    career_prob_p1 = estimate_win_prob(
-        p1_blend, p2_blend,
-        kalshi_state["score_str"], kalshi_state["game_score_str"],
-        kalshi_state["p1_serves"], atp["best_of"],
-    )["match"]
 
     # Derived DP distributions (scorelines / per-set / total-games) — logged only.
     # target_match=mc_prob makes them an exact decomposition of the traded match prob.
     report = match_report(
         probs["pa_blend"], probs["pb_blend"],
         kalshi_state["score_str"], kalshi_state["game_score_str"],
-        kalshi_state["p1_serves"], atp["best_of"], cfg.GAME_THRESHOLDS,
+        kalshi_state["p1_serves"], best_of, cfg.GAME_THRESHOLDS,
         target_match=mc_prob,
     )
 
     _store.update_mc_prob(key, mc_prob, game_prob)
-    _store.record_sim(key, score_key, total_points)
+    _store.record_sim(key, score_key)
 
     # Divergence stand-down: sustained large model-market disagreement means
     # the market knows something we can't model — stop entering, keep exits live.
@@ -302,20 +270,21 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         ms, pos_side, pos_value,
         p1_kstats=kalshi_state.get("p1_kstats"), p2_kstats=kalshi_state.get("p2_kstats"),
         prematch_price=cached["prematch_price"], pa0=cached["pa0"], pb0=cached["pb0"],
-        pa_blend=probs["pa_blend"], pb_blend=probs["pb_blend"], career_prob_p1=career_prob_p1,
-        report=report,
+        pa_blend=probs["pa_blend"], pb_blend=probs["pb_blend"],
+        report=report, vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
     )
 
     server_name = p1_name if kalshi_state["p1_serves"] else p2_name
     mkt = {"pa0": cached["pa0"], "pb0": cached["pb0"], "pa_blend": probs["pa_blend"],
-           "pb_blend": probs["pb_blend"], "wt_a": probs["wt_a"], "wt_b": probs["wt_b"],
-           "career_prob_p1": career_prob_p1}
+           "pb_blend": probs["pb_blend"], "wt_a": probs["wt_a"], "wt_b": probs["wt_b"]}
     _print_poll(cached, p1_name, p2_name,
                 kalshi_state["score_str"], kalshi_state["game_score_str"],
                 server_name, p1_stats, p2_stats, mkt,
                 mc_prob, game_prob, set_prob,
-                p1_ask, p1_bid, p2_ask, p2_bid, atp["best_of"],
-                _store.get_or_create(key), report=report)
+                p1_ask, p1_bid, p2_ask, p2_bid, best_of,
+                _store.get_or_create(key), report=report,
+                vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
+                cond=probs["cond"])
     return True
 
 
@@ -475,20 +444,12 @@ def _tick(mc):
     if score_key != ms.last_sim_score or _store.is_mc_stale(key):
         att  = _sim_attempts.get(key)
         same = att is not None and att["score_key"] == score_key
-        # Stale stats (ATP lagging Kalshi) retry quickly; other failures back off
-        retry_gap = cfg.ATP_LAG_RETRY_SECS if (same and att["stale_since"]) else cfg.SIM_RETRY_SECS
-        if not same or time.time() - att["ts"] >= retry_gap:
-            stale_since  = att["stale_since"] if same else None
-            accept_stale = (stale_since is not None
-                            and time.time() - stale_since >= cfg.ATP_LAG_MAX_WAIT_SECS)
+        # Throttle retries when stats aren't ready yet (early in a match); a new
+        # score runs immediately.
+        if not same or time.time() - att["ts"] >= cfg.SIM_RETRY_SECS:
             result = _run_sim(mc, cached, kalshi_state, score_key,
-                              p1_ask, p1_bid, p2_ask, p2_bid,
-                              accept_stale=accept_stale)
-            _sim_attempts[key] = {
-                "score_key":   score_key,
-                "ts":          time.time(),
-                "stale_since": (stale_since or time.time()) if result == "stale" else None,
-            }
+                              p1_ask, p1_bid, p2_ask, p2_bid)
+            _sim_attempts[key] = {"score_key": score_key, "ts": time.time()}
             sim_fresh = result is True
 
     # Exits run every tick (they protect an existing position); entries only on
@@ -500,8 +461,8 @@ def _tick(mc):
           and not ms.standdown
           and not _store.is_in_cooldown(key)
           and not _store.is_budget_exhausted(key)):
-        # Re-fetch prices: the Hawkeye fetch + sim take a few seconds and the
-        # market may have moved since the tick started.
+        # Re-fetch prices: the sim takes a moment and the market may have moved
+        # since the tick started.
         p1_ask, _ = get_best_ask_bid(cached["p1_ticker"])
         p2_ask, _ = get_best_ask_bid(cached["p2_ticker"])
         if p1_ask is not None and p2_ask is not None:

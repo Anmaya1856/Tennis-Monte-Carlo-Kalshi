@@ -1,4 +1,4 @@
-import datetime, os
+import datetime
 
 # Trading parameters
 MATCH_BUDGET      = 5.00
@@ -21,23 +21,17 @@ KELLY_FRACTION    = 1  #0.5 for half Kelly
 COOLDOWN_SECONDS  = 300
 FAST_POLL_SECS    = 1
 MAX_MC_STALENESS_SECS = 120  # skip entries if sim older than this; forces re-sim heartbeat
-SIM_RETRY_SECS    = 15   # min gap between Hawkeye retries after a failed sim (protects CF-guarded endpoint)
-ATP_LAG_RETRY_SECS    = 2    # retry gap when Hawkeye stats lag the Kalshi score change
-ATP_LAG_MAX_WAIT_SECS = 10   # after this long waiting for fresh stats, sim with what we have
-N_SIMS            = 50_000  
+SIM_RETRY_SECS    = 15   # min gap between retries after a failed sim (stats not ready yet)
+N_SIMS            = 50_000
 N_DRAWS           = 1000     # stat draws for the exact engine; each draw evaluated exactly
+BP_PRESSURE       = 0.03      # subtract this from the server's point-win prob at break points (serving under pressure); 0 = off
 DRY_RUN           = True
 
 # Market-implied prior (live model): invert the pre-match Kalshi price into
 # per-server point probs, then blend with in-match service counts.
 MARKET_PRIOR_N = 40       # market-implied point probs worth this many virtual service points
 INVERSION_BASE = 0.64     # assumed tour-average serve level; fixes the overall level in the inversion
-GAME_THRESHOLDS = [33.5, 38.5, 43.5]  # log P(total match games > X) for each; changeable
-
-# Career-stat prior (shadow model, logged for A/B comparison; not traded on)
-PRIOR_N  = 20             # career stats worth this many virtual points per stat
-SURFACE  = "Grass"        # default surface for career lookups; override per match with "surface"
-ATP_DB   = "atp/data/atp.db"
+GAME_THRESHOLDS = [16.5, 17.5, 18.5, 19.5, 20.5, 21.5, 22.5, 25.5, 26.5, 27.5, 30.5]  # log P(total match games > X) for each; changeable
 
 # Kalshi API credentials
 API_KEY     = "982c924c-9e22-44c8-a801-3be1ff50d45d"
@@ -51,19 +45,15 @@ LOG_DIR = "data/logs"
 LOG_SUFFIX = datetime.datetime.now().strftime("_%Y%m%d_%H%M%S")
 
 # Match configuration
-# Each entry: hawkeye_url, event_ticker, and optional budget (dollars; defaults to MATCH_BUDGET)
-# milestone_id, canonical ticker, and p1 identity are all resolved automatically.
+# Each entry: event_ticker, and optional budget (dollars; defaults to MATCH_BUDGET).
+# milestone_id, best_of, canonical ticker, and p1 identity are all resolved automatically.
 MATCH_CONFIG = [
     {
-        "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/2941/ms021",
-        "event_ticker": "KXATPCHALLENGERMATCH-26JUL13KENSHE",
+        "event_ticker": "KXATPMATCH-26JUL31TABSHE",
         "budget": 5.00,
-        "surface": "Grass",
     },
     # {
-    #     "hawkeye_url":  "https://www.atptour.com/-/Hawkeye/MatchStats/2026/2120/qs027",
-    #     "event_ticker": "KXATPCHALLENGERMATCH-26JUL12FUEROS",
+    #     "event_ticker": "KXATPMATCH-26JUL30CERGEA",
     #     "budget": 5.00,
-    #     "surface": "Grass",
     # },
 ]

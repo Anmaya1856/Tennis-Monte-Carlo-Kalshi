@@ -14,7 +14,6 @@ class MatchState:
     trail_exit: dict = None        # {player, price, time} of last trail_lock exit
     last_sim_score: tuple = None   # (score_str, game_score_str, p1_serves) at last successful sim
     last_sim_time: float = 0.0     # unix timestamp of last successful sim
-    last_sim_total_points: int = 0 # total points in the Hawkeye stats at last successful sim
     divergence_ema: float = 0.0    # EMA of |model - market| updated each sim
     standdown: bool = False        # entries paused due to sustained model-market divergence
 
@@ -58,11 +57,10 @@ class MatchStateStore:
             "player": player, "price": price, "time": time.time(),
         }
 
-    def record_sim(self, ticker, score_key, total_points=0):
+    def record_sim(self, ticker, score_key):
         ms = self.get_or_create(ticker)
-        ms.last_sim_score        = score_key
-        ms.last_sim_time         = time.time()
-        ms.last_sim_total_points = total_points
+        ms.last_sim_score = score_key
+        ms.last_sim_time  = time.time()
 
     def is_mc_stale(self, ticker):
         return time.time() - self.get_or_create(ticker).last_sim_time > cfg.MAX_MC_STALENESS_SECS
