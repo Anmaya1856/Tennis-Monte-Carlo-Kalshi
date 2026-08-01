@@ -10,9 +10,10 @@ _TRADE_COLS = [
 ]
 
 _SNAPSHOT_COLS = [
-    "timestamp", "ticker", "p1_name", "p2_name", "score_str", "game_score_str", "server",
+    "timestamp", "ticker", "milestone_id", "p1_name", "p2_name", "best_of", "score_str", "game_score_str", "server",
     "mc_prob_p1", "mc_set_prob_p1", "mc_game_prob_p1",
     "mc_vol_point", "mc_vol_game",
+    "cond_win_game", "cond_lose_game", "cond_win_set", "cond_lose_set",
     "kalshi_p1_ask", "kalshi_p1_bid", "kalshi_p2_ask", "kalshi_p2_bid",
     "position_side", "position_entry_price", "position_count", "position_high_water",
     "position_current_value", "position_unrealized_pnl", "budget_remaining",
@@ -98,7 +99,8 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
                  p1_ask, p1_bid, p2_ask, p2_bid,
                  ms, pos_side, pos_value, p1_kstats=None, p2_kstats=None,
                  prematch_price=None, pa0=None, pb0=None, pa_blend=None, pb_blend=None,
-                 report=None, vol_point=None, vol_game=None):
+                 report=None, vol_point=None, vol_game=None, best_of=None, cond=None,
+                 milestone_id=None):
     """ms: MatchState for this match; pos_side/pos_value: 'p1'/'p2' and owned-market
     bid when a position is open, else None. p1_kstats/p2_kstats: Kalshi shot-level dicts.
     prematch/pa/pb: live market-prior inputs.
@@ -132,16 +134,22 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
         **rep,
         "timestamp":                  _now_str(),
         "ticker":                     ticker,
+        "milestone_id":               "" if milestone_id is None else milestone_id,
         "p1_name":                    p1_name,
         "p2_name":                    p2_name,
         "score_str":                  score_str,
         "game_score_str":             game_score_str,
         "server":                     server,
+        "best_of":                    "" if best_of is None else best_of,
         "mc_prob_p1":                 mc_prob_p1,
         "mc_set_prob_p1":             mc_set_prob_p1,
         "mc_game_prob_p1":            mc_game_prob_p1,
         "mc_vol_point":               "" if vol_point is None else round(vol_point, 4),
         "mc_vol_game":                "" if vol_game is None else round(vol_game, 4),
+        "cond_win_game":              "" if cond is None else round(cond["win_game"], 4),
+        "cond_lose_game":             "" if cond is None else round(cond["lose_game"], 4),
+        "cond_win_set":               "" if cond is None else round(cond["win_set"], 4),
+        "cond_lose_set":              "" if cond is None else round(cond["lose_set"], 4),
         "kalshi_p1_ask":              p1_ask,
         "kalshi_p1_bid":              p1_bid,
         "kalshi_p2_ask":              p2_ask,

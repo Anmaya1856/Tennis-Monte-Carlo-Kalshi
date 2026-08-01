@@ -22,6 +22,8 @@ COOLDOWN_SECONDS  = 300
 FAST_POLL_SECS    = 1
 MAX_MC_STALENESS_SECS = 120  # skip entries if sim older than this; forces re-sim heartbeat
 SIM_RETRY_SECS    = 15   # min gap between retries after a failed sim (stats not ready yet)
+MATCH_END_GRACE_SECS = 900  # exit the bot if the milestone stays not-live this long (survives breaks)
+INIT_TIMEOUT_SECS    = 120  # exit if a match never initializes within this long (likely a bad ticker)
 N_DRAWS           = 1000     # stat draws for the exact engine; each draw evaluated exactly
 BP_PRESSURE       = 0.03      # subtract this from the server's point-win prob at break points (serving under pressure); 0 = off
 DRY_RUN           = True
@@ -48,7 +50,7 @@ LOG_SUFFIX = datetime.datetime.now().strftime("_%Y%m%d_%H%M%S")
 # milestone_id, best_of, canonical ticker, and p1 identity are all resolved automatically.
 MATCH_CONFIG = [
     {
-        "event_ticker": "KXATPMATCH-26JUL31TABSHE",
+        "event_ticker": "KXATPMATCH-26JUL31WONGEA",
         "budget": 5.00,
     },
     # {

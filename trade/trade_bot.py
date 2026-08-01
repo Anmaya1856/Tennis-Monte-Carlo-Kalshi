@@ -7,7 +7,7 @@ Set MATCH_CONFIG in config.py with at least one entry before running.
 Usage:
     python -m trade.trade_bot
 """
-import datetime, sys, time
+import argparse, datetime, os, sys, time
 
 import trade.config as cfg
 from trade.kalshi_client import (get_best_ask_bid, place_order, close_position,
@@ -34,6 +34,22 @@ _match_cache = {}
 # event_ticker → {"score_key", "ts"} of the last sim attempt. Throttles retries
 # when serve stats aren't ready yet (early in a match) by SIM_RETRY_SECS.
 _sim_attempts = {}
+
+# event_ticker → health, so a process self-terminates on sustained failure:
+# {"first_seen", "last_init", "not_live_since"}.
+_match_health = {}
+
+
+def _stop_requested(event_ticker):
+    """True (and clears the flag) if the monitor asked this match to stop."""
+    path = os.path.join(cfg.LOG_DIR, f"stop_{event_ticker}.flag")
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return True
+    return False
 
 
 def _pos_player(cached, pos):
@@ -272,6 +288,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         prematch_price=cached["prematch_price"], pa0=cached["pa0"], pb0=cached["pb0"],
         pa_blend=probs["pa_blend"], pb_blend=probs["pb_blend"],
         report=report, vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
+        best_of=best_of, cond=probs["cond"], milestone_id=cached["milestone_id"],
     )
 
     server_name = p1_name if kalshi_state["p1_serves"] else p2_name
@@ -400,14 +417,24 @@ def _check_exit(key, cached, p1_bid, p2_bid):
 
 
 def _tick(mc):
-    """One tick for one configured match: poll Kalshi score + prices, sim on score change, trade decisions."""
+    """One tick for one match: poll Kalshi score + prices, sim on score change, trade.
+    Returns "dead" if the match should be dropped (bad ticker / match over), else None."""
     event_ticker = mc["event_ticker"]
     key = event_ticker
+    h = _match_health.setdefault(key, {"first_seen": time.time(), "last_init": 0.0,
+                                       "not_live_since": None})
 
     if event_ticker not in _match_cache:
+        if time.time() - h["last_init"] < 5:      # throttle init retries (bad/early ticker)
+            return None
+        h["last_init"] = time.time()
         cached = _init_event(event_ticker)
         if cached is None:
-            return
+            if time.time() - h["first_seen"] > cfg.INIT_TIMEOUT_SECS:
+                print(f"[stop] {event_ticker}: could not initialize within "
+                      f"{cfg.INIT_TIMEOUT_SECS}s — giving up (bad ticker?)")
+                return "dead"
+            return None
         _match_cache[event_ticker] = cached
 
     cached = _match_cache[event_ticker]
@@ -421,8 +448,15 @@ def _tick(mc):
     # Kalshi live score + server (every tick — fast, public, reliable)
     details = fetch_milestone(cached["milestone_id"])
     if details is None:
+        if h["not_live_since"] is None:
+            h["not_live_since"] = time.time()
+        elif time.time() - h["not_live_since"] > cfg.MATCH_END_GRACE_SECS:
+            print(f"[stop] {event_ticker}: milestone not live for "
+                  f">{cfg.MATCH_END_GRACE_SECS // 60} min — match over, exiting")
+            return "dead"
         print(f"[poll] milestone not live (id={cached['milestone_id']})")
         return
+    h["not_live_since"] = None   # match is live again — reset the grace timer
     kalshi_state = parse_milestone_state(details, cached["p1_competitor_id"])
     if not kalshi_state["is_live"]:
         print(f"[poll] match state is not live")
@@ -474,16 +508,36 @@ def main():
     # dashboard's box characters — don't let a log redirect kill the bot.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    if not cfg.MATCH_CONFIG:
-        print("No matches configured. Add entries to MATCH_CONFIG in trade/config.py.")
+    # One process per match: pass an event ticker to trade a single match (its own
+    # budget, state, and log file). No args falls back to MATCH_CONFIG.
+    parser = argparse.ArgumentParser(description="Kalshi in-play tennis trading bot")
+    parser.add_argument("event_ticker", nargs="?", help="run a single match by event ticker")
+    parser.add_argument("--budget", type=float, default=None, help="budget for this match (dollars)")
+    args = parser.parse_args()
+
+    if args.event_ticker:
+        matches = [{"event_ticker": args.event_ticker,
+                    **({"budget": args.budget} if args.budget is not None else {})}]
+    else:
+        matches = cfg.MATCH_CONFIG
+
+    if not matches:
+        print("No matches configured. Pass an event ticker or add entries to MATCH_CONFIG.")
         return
 
     mode = "DRY RUN" if cfg.DRY_RUN else "LIVE"
-    print(f"Starting trade bot [{mode}] — {len(cfg.MATCH_CONFIG)} match(es) configured")
+    print(f"Starting trade bot [{mode}] — {len(matches)} match(es)")
 
     while True:
-        for mc in cfg.MATCH_CONFIG:
-            _tick(mc)
+        for mc in list(matches):
+            if _stop_requested(mc["event_ticker"]):
+                print(f"[stop] {mc['event_ticker']}: stop requested from monitor — exiting")
+                return
+            if _tick(mc) == "dead":
+                matches.remove(mc)
+        if not matches:
+            print("[exit] no active matches remaining — shutting down")
+            return
         time.sleep(cfg.FAST_POLL_SECS)
 
 
