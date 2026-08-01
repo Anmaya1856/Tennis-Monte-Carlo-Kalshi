@@ -5,7 +5,6 @@ import trade.config as cfg
 from trade.exact import (game_win_prob, tiebreak_win_prob, win_probs,
                          estimate_win_prob, point_win_prob,
                          implied_point_probs, estimate_win_prob_market, match_report)
-from trade.simulation import estimate_win_prob as mc_estimate
 
 
 def _fixed(fi, wf, ws, rf, rs):
@@ -48,20 +47,6 @@ def test_monotone_in_strength():
     weak = estimate_win_prob(EVEN, STRONG, "0-0", "0-0", True, 3, n_draws=1)
     strong = estimate_win_prob(STRONG, EVEN, "0-0", "0-0", True, 3, n_draws=1)
     assert strong["match"] > 0.5 > weak["match"]
-
-def _within_mc(state_args, n_sims=10000):
-    np.random.seed(11)
-    mc = mc_estimate(*state_args, n_sims=n_sims)
-    ex = estimate_win_prob(*state_args, n_draws=1)
-    for k in ("match", "set", "game"):
-        se = math.sqrt(max(ex[k] * (1 - ex[k]), 1e-6) / n_sims)
-        assert abs(ex[k] - mc[k]) <= 5 * se + 1e-9, f"{k}: exact={ex[k]:.4f} mc={mc[k]:.4f}"
-
-def test_oracle_mid_set():
-    _within_mc((STRONG, EVEN, "6-4 3-2", "30-15", True, 3))
-
-def test_oracle_tiebreak():
-    _within_mc((EVEN, EVEN, "6-6", "3-2", True, 3))
 
 def test_conditionals_law_of_total_probability():
     ex = estimate_win_prob(STRONG, EVEN, "6-4 3-2", "30-15", True, 5, n_draws=1)

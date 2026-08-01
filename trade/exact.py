@@ -1,20 +1,63 @@
 """Exact win probabilities via dynamic programming (Barnett & Clarke 2005; O'Malley 2008).
 
-Same model as trade/simulation.py — iid points at per-server win rates, stats drawn
-from career-blended Betas — but each draw is evaluated exactly instead of dice-rolled,
-so the only remaining noise is stat-draw variance. All computations are vectorized
-across draws: probabilities are numpy arrays of shape (n_draws,).
+iid points at per-server win rates, stats drawn from Beta posteriors, each draw
+evaluated exactly (no dice-rolling), so the only remaining noise is stat-draw
+variance. All computations are vectorized across draws: probabilities are numpy
+arrays of shape (n_draws,).
 """
 import numpy as np
 
 import trade.config as cfg
-from trade.simulation import _parse_match_state, _parse_game_score, _parse_score, _is_set_complete
 
 _EPS = 1e-12
 
 
+# ── Score-string parsing ──────────────────────────────────────────────────────
+
+def _parse_score(score_str):
+    result = []
+    for s in score_str.strip().split():
+        p1g, p2g = map(int, s.split('-'))
+        result.append((p1g, p2g))
+    return result
+
+
+def _is_set_complete(p1g, p2g):
+    if p1g == 7 and p2g == 6: return True
+    if p2g == 7 and p1g == 6: return True
+    if p1g >= 6 and p1g - p2g >= 2: return True
+    if p2g >= 6 and p2g - p1g >= 2: return True
+    return False
+
+
+def _parse_match_state(score_str, best_of):
+    sets_won = [0, 0]
+    current_set_games = None
+    for p1g, p2g in _parse_score(score_str):
+        if _is_set_complete(p1g, p2g):
+            if p1g > p2g: sets_won[0] += 1
+            else:         sets_won[1] += 1
+        else:
+            current_set_games = (p1g, p2g)
+            break
+    return sets_won, current_set_games
+
+
+_NOTATION = {'0': 0, '15': 1, '30': 2, '40': 3, 'Ad': 4, 'AD': 4, 'A': 4}
+
+
+def _parse_game_score(game_score_str, is_tiebreak=False):
+    s = game_score_str.strip()
+    if not s or s == "0-0":
+        return (0, 0)
+    left, right = s.split('-')
+    if is_tiebreak:
+        return (int(left), int(right))
+    return (_NOTATION[left], _NOTATION[right])
+
+
 def point_win_prob(server, receiver):
-    """Effective point-win prob for the server (same blend as simulation._sim_point)."""
+    """Effective point-win prob for the server (1st/2nd serve blended with returner)."""
     p_first  = (server["win_first"]  + (1 - receiver["return_first"]))  / 2
     p_second = (server["win_second"] + (1 - receiver["return_second"])) / 2
     return server["first_in"] * p_first + (1 - server["first_in"]) * p_second
@@ -234,8 +277,8 @@ _STAT_KEYS = ["first_in", "win_first", "win_second", "return_first", "return_sec
 
 
 def _draw_stats(stats, n):
-    """Vectorized equivalent of simulation._sample_stats: Beta(num+0.5, den-num+0.5)
-    per stat, or the raw rate when counts are missing."""
+    """Draw n samples per stat from its Beta(num+0.5, den-num+0.5) posterior,
+    or the raw rate when counts are missing."""
     out = {}
     for k in _STAT_KEYS:
         num, den = stats.get(k + "_num"), stats.get(k + "_den")
@@ -247,9 +290,9 @@ def _draw_stats(stats, n):
 
 
 def estimate_win_prob(p1_stats, p2_stats, score_str, game_score_str,
-                      p1_serves, best_of, n_sims=None, n_draws=None):
-    """Drop-in replacement for simulation.estimate_win_prob (n_sims accepted and ignored;
-    precision is controlled by N_DRAWS stat draws, each evaluated exactly)."""
+                      p1_serves, best_of, n_draws=None):
+    """Match/set/game win probs for p1, averaged over N_DRAWS stat draws (each
+    evaluated exactly)."""
     n = n_draws or getattr(cfg, "N_DRAWS", 500)
     sets_won, current_set_games = _parse_match_state(score_str, best_of)
     in_tiebreak = current_set_games == (6, 6)
