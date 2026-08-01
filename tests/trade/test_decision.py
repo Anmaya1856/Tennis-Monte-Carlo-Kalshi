@@ -14,7 +14,14 @@ def test_edge_threshold_underdog_floor():
     assert edge_threshold(0.10) == cfg.EDGE_MIN_UNDERDOG
     assert edge_threshold(0.05) == cfg.EDGE_MIN_UNDERDOG
     assert edge_threshold(0.90) < cfg.EDGE_MIN_UNDERDOG          # favorite side keeps sin^2
-    assert edge_threshold(0.25) > cfg.EDGE_MIN_UNDERDOG          # curve already above floor there
+    # the cutoff sits at/above where the sin^2 curve meets the floor, so they join
+    # continuously — no step at the cutoff and no dip below the floor
+    below = edge_threshold(cfg.UNDERDOG_PRICE - 1e-6)
+    above = edge_threshold(cfg.UNDERDOG_PRICE + 1e-6)
+    assert above >= cfg.EDGE_MIN_UNDERDOG - 1e-9                 # curve has reached the floor (no dip)
+    assert abs(above - below) < 0.005                           # continuous across the cutoff
+    for p in (0.05, 0.15, 0.25, 0.35, cfg.UNDERDOG_PRICE):
+        assert edge_threshold(p) >= cfg.EDGE_MIN_UNDERDOG - 1e-9  # threshold never dips below the floor
 
 def test_trail_scales_on_cheap_entries():
     # entry 0.06: arm = giveback = 0.35 * 0.06 = 0.021

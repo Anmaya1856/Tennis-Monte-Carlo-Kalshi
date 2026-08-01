@@ -131,8 +131,8 @@ def test_get_event_competitor_map():
     event_resp = {
         "event": {"event_ticker": "EVENT"},
         "markets": [
-            {"custom_strike": {"tennis_competitor": "comp-a"}, "yes_sub_title": "Alice", "ticker": "EVENT-A"},
-            {"custom_strike": {"tennis_competitor": "comp-b"}, "yes_sub_title": "Bob",   "ticker": "EVENT-B"},
+            {"custom_strike": {"tennis_competitor": "comp-a"}, "yes_sub_title": "Alice", "ticker": "EVENT-A", "status": "active"},
+            {"custom_strike": {"tennis_competitor": "comp-b"}, "yes_sub_title": "Bob",   "ticker": "EVENT-B", "status": "active"},
         ],
     }
     with patch("trade.kalshi_client.requests.get") as mock_get:
@@ -140,8 +140,9 @@ def test_get_event_competitor_map():
         mock_get.return_value.json.return_value = event_resp
         from trade.kalshi_client import get_event_competitor_map
         result = get_event_competitor_map("EVENT")
-    assert result["comp-a"] == {"name": "Alice", "ticker": "EVENT-A"}
-    assert result["comp-b"] == {"name": "Bob",   "ticker": "EVENT-B"}
+    # status is carried through — _init_event uses it to keep only the active markets
+    assert result["comp-a"] == {"name": "Alice", "ticker": "EVENT-A", "status": "active"}
+    assert result["comp-b"] == {"name": "Bob",   "ticker": "EVENT-B", "status": "active"}
 
 
 def test_parse_milestone_state_p1_is_competitor1():

@@ -5,7 +5,7 @@ MATCH_BUDGET      = 5.00
 EDGE_MIN = 0.01   # entry edge required at the price extremes (raise to ~0.03 before going live: fees+spread)
 EDGE_MAX = 0.07   # entry edge required at 50c; threshold = EDGE_MIN + (EDGE_MAX-EDGE_MIN)*sin(pi*price)
 EDGE_MIN_UNDERDOG = 0.06  # floor on the entry edge for cheap markets (longshots are usually overpriced)
-UNDERDOG_PRICE    = 0.25  # the floor applies below this price
+UNDERDOG_PRICE    = 0.37  # floor applies below this price; ~where the sin^2 curve meets EDGE_MIN_UNDERDOG, so the two join with no dip
 TRAIL_SCALE_FRAC  = 0.35  # trail arm/giveback capped at this fraction of entry (fixes penny positions)
 STOP_MAX_FRAC     = 0.50  # stop distance capped at this fraction of entry
 DIVERGENCE_PAUSE      = 0.20  # pause entries when |model-market| EMA exceeds this
