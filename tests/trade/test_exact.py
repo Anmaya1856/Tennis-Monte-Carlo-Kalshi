@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import pytest
+import trade.config as cfg
 from trade.exact import (game_win_prob, tiebreak_win_prob, win_probs,
                          estimate_win_prob, point_win_prob,
                          implied_point_probs, estimate_win_prob_market, match_report)
@@ -16,14 +17,16 @@ EVEN   = _fixed(0.62, 0.72, 0.51, 0.28, 0.49)
 STRONG = _fixed(0.68, 0.80, 0.56, 0.33, 0.55)
 
 
-def test_game_win_prob_closed_form():
+def test_game_win_prob_closed_form(monkeypatch):
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.0)   # plain hold, no pressure penalty
     # explicit enumeration at p = 0.65
     p, q = 0.65, 0.35
     deuce = p * p / (1 - 2 * p * q)
     expected = p**4 + 4 * p**4 * q + 10 * p**4 * q**2 + 20 * p**3 * q**3 * deuce
     assert abs(game_win_prob(0.65) - expected) < 1e-12
 
-def test_game_win_prob_boundaries():
+def test_game_win_prob_boundaries(monkeypatch):
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.0)   # symmetric hold at p=0.5 needs no penalty
     assert game_win_prob(0.5) == pytest.approx(0.5)
     assert game_win_prob(0.7, 4, 2) == 1.0
     assert game_win_prob(0.7, 1, 4) == 0.0
@@ -152,6 +155,82 @@ def test_match_report_played_set_completed_is_certain():
     # current set 2 certainly played
     p1_2, p2_2 = r["set_win"][1]
     assert p1_2 + p2_2 == pytest.approx(1.0, abs=1e-9)
+
+def test_bp_pressure_lowers_hold(monkeypatch):
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.0)
+    base = game_win_prob(0.65)
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.03)
+    assert game_win_prob(0.65) < base
+
+def test_bp_pressure_monotone(monkeypatch):
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.02)
+    small = game_win_prob(0.65)
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.06)
+    big = game_win_prob(0.65)
+    assert big < small
+
+def test_bp_pressure_applies_at_break_point_state(monkeypatch):
+    # from 30-40 the server holds only by winning the BP (-> deuce), else broken;
+    # so hold == p_bp * P(hold | deuce)
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.03)
+    p, p_bp = 0.65, 0.62
+    assert game_win_prob(p, 2, 3) == pytest.approx(p_bp * game_win_prob(p, 3, 3), abs=1e-12)
+
+def test_bp_pressure_at_advantage_receiver(monkeypatch):
+    # 40-Ad (advantage receiver) is a break point -> uses p_bp against the deuce value
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.03)
+    p, p_bp = 0.65, 0.62
+    assert game_win_prob(p, 3, 4) == pytest.approx(p_bp * game_win_prob(p, 3, 3), abs=1e-12)
+
+def test_bp_pressure_not_applied_at_advantage_server(monkeypatch):
+    # 40-Ad the other way (advantage server) is NOT a break point: win-point path uses full p
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.03)
+    p = 0.65
+    assert game_win_prob(p, 4, 3) == pytest.approx(p + (1 - p) * game_win_prob(p, 3, 3), abs=1e-12)
+
+def test_bp_pressure_clip_no_negative(monkeypatch):
+    # penalty larger than the point prob clips to 0, stays a valid probability
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.10)
+    h = game_win_prob(0.05)
+    assert 0.0 <= float(h) <= 1.0
+
+def test_bp_pressure_keeps_even_match_symmetric(monkeypatch):
+    monkeypatch.setattr(cfg, "BP_PRESSURE", 0.03)
+    ex = estimate_win_prob(EVEN, EVEN, "0-0", "0-0", True, 3, n_draws=1)
+    assert ex["match"] == pytest.approx(0.5, abs=1e-9)
+
+def test_vol_present_and_nonnegative():
+    ex = estimate_win_prob(STRONG, EVEN, "6-4 3-2", "30-15", True, 3, n_draws=1)
+    assert set(ex["vol"]) == {"point", "game"}
+    assert ex["vol"]["point"] >= 0.0
+    assert ex["vol"]["game"] >= 0.0
+    assert math.isfinite(ex["vol"]["point"]) and math.isfinite(ex["vol"]["game"])
+
+def test_vol_game_matches_cond_decomposition():
+    # vol_game == sqrt(g(1-g)) * |cond.win_game - cond.lose_game| from the same output
+    ex = estimate_win_prob(STRONG, EVEN, "6-4 3-2", "30-15", True, 3, n_draws=1)
+    g, c = ex["game"], ex["cond"]
+    expected = math.sqrt(g * (1 - g)) * abs(c["win_game"] - c["lose_game"])
+    assert ex["vol"]["game"] == pytest.approx(expected, abs=1e-9)
+
+def test_vol_point_higher_at_pivotal_state():
+    # a tiebreak at 6-6 (set point both ways) swings the match far more per point
+    # than the very first point of an even match
+    pivotal = estimate_win_prob(EVEN, EVEN, "6-6", "6-6", True, 3, n_draws=1)["vol"]["point"]
+    calm = estimate_win_prob(EVEN, EVEN, "0-0", "0-0", True, 3, n_draws=1)["vol"]["point"]
+    assert pivotal > calm
+
+def test_vol_game_at_least_vol_point():
+    # a game bundles several points of movement, so its jump variance dominates one point's
+    ex = estimate_win_prob(STRONG, EVEN, "6-4 3-2", "30-15", True, 3, n_draws=1)
+    assert ex["vol"]["game"] >= ex["vol"]["point"] - 1e-9
+
+def test_vol_smaller_when_match_nearly_decided():
+    # P1 down two sets in a Bo5 early in set 3: match is nearly settled, so a single
+    # point barely moves the match prob compared with an even fresh match
+    lopsided = estimate_win_prob(EVEN, STRONG, "3-6 4-6 2-3", "15-30", True, 5, n_draws=1)["vol"]["point"]
+    even = estimate_win_prob(EVEN, EVEN, "0-0", "0-0", True, 5, n_draws=1)["vol"]["point"]
+    assert lopsided < even
 
 def test_draws_average_beta_uncertainty():
     stats = dict(EVEN)

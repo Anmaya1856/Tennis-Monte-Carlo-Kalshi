@@ -12,12 +12,13 @@ _TRADE_COLS = [
 _SNAPSHOT_COLS = [
     "timestamp", "ticker", "p1_name", "p2_name", "score_str", "game_score_str", "server",
     "mc_prob_p1", "mc_set_prob_p1", "mc_game_prob_p1",
+    "mc_vol_point", "mc_vol_game",
     "kalshi_p1_ask", "kalshi_p1_bid", "kalshi_p2_ask", "kalshi_p2_bid",
     "position_side", "position_entry_price", "position_count", "position_high_water",
     "position_current_value", "position_unrealized_pnl", "budget_remaining",
     "divergence_ema", "standdown",
-    # market-implied prior (live model) + career shadow model
-    "prematch_price", "pa0", "pb0", "pa_blend", "pb_blend", "career_prob_p1",
+    # market-implied prior (live model)
+    "prematch_price", "pa0", "pb0", "pa_blend", "pb_blend",
     # derived DP distributions (point estimate; forward-looking from current score)
     "sc_p1_d0", "sc_p1_d1", "sc_p1_d2", "sc_p2_d0", "sc_p2_d1", "sc_p2_d2",
     "p1_set1", "p2_set1", "p1_set2", "p2_set2", "p1_set3", "p2_set3",
@@ -97,14 +98,14 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
                  p1_ask, p1_bid, p2_ask, p2_bid,
                  ms, pos_side, pos_value, p1_kstats=None, p2_kstats=None,
                  prematch_price=None, pa0=None, pb0=None, pa_blend=None, pb_blend=None,
-                 career_prob_p1=None, report=None):
+                 report=None, vol_point=None, vol_game=None):
     """ms: MatchState for this match; pos_side/pos_value: 'p1'/'p2' and owned-market
     bid when a position is open, else None. p1_kstats/p2_kstats: Kalshi shot-level dicts.
-    prematch/pa/pb/career: live market-prior inputs + career shadow-model probability.
+    prematch/pa/pb: live market-prior inputs.
     report: exact.match_report() dict (scorelines/set_win/over_games), or None."""
     pos = ms.position
     market = {"prematch_price": prematch_price, "pa0": pa0, "pb0": pb0,
-              "pa_blend": pa_blend, "pb_blend": pb_blend, "career_prob_p1": career_prob_p1}
+              "pa_blend": pa_blend, "pb_blend": pb_blend}
     market = {k: ("" if v is None else v) for k, v in market.items()}
     rep = {}
     sc = (report or {}).get("scorelines", {})
@@ -139,6 +140,8 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
         "mc_prob_p1":                 mc_prob_p1,
         "mc_set_prob_p1":             mc_set_prob_p1,
         "mc_game_prob_p1":            mc_game_prob_p1,
+        "mc_vol_point":               "" if vol_point is None else round(vol_point, 4),
+        "mc_vol_game":                "" if vol_game is None else round(vol_game, 4),
         "kalshi_p1_ask":              p1_ask,
         "kalshi_p1_bid":              p1_bid,
         "kalshi_p2_ask":              p2_ask,

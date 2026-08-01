@@ -21,20 +21,23 @@ def point_win_prob(server, receiver):
 
 
 def game_win_prob(p, a=0, b=0):
-    """Server wins the game from point score (a, b); ad scoring (Ad -> 4)."""
+    """Server wins the game from point score (a, b); ad scoring (Ad -> 4).
+    At break points (receiver one point from winning) the server's point-win prob
+    is reduced by cfg.BP_PRESSURE to model serving under pressure (0 = off)."""
     if a >= 4 and a - b >= 2:
         return 1.0 + 0 * p
     if b >= 4 and b - a >= 2:
         return 0.0 * p
+    p_bp = np.clip(p - getattr(cfg, "BP_PRESSURE", 0.0), 0.0, 1.0)
     if a >= 3 and b >= 3:
-        q = 1 - p
-        deuce = p * p / (1 - 2 * p * q)
+        deuce = p * p / (1 - (1 - p) * (p + p_bp))
         if a == b:
             return deuce
-        if a > b:                       # advantage server
-            return p + q * deuce
-        return p * deuce                # advantage receiver
-    return p * game_win_prob(p, a + 1, b) + (1 - p) * game_win_prob(p, a, b + 1)
+        if a > b:                       # advantage server (not a break point)
+            return p + (1 - p) * deuce
+        return p_bp * deuce             # advantage receiver (break point)
+    p_pt = p_bp if (b >= 3 and b - a >= 1) else p
+    return p_pt * game_win_prob(p, a + 1, b) + (1 - p_pt) * game_win_prob(p, a, b + 1)
 
 
 def _tb_first_server(a, b, a_serves_next):
@@ -194,6 +197,25 @@ def win_probs(pA, pB, sets_won, set_games, in_tiebreak, game_state, p1_serves, b
     cond["lose_set"] = (cur_vec[2] * _match_prob(sa, sb + 1, True,  need, f00_A, f00_B, m_memo)
                         + cur_vec[3] * _match_prob(sa, sb + 1, False, need, f00_A, f00_B, m_memo)) / (pl + _EPS)
 
+    # match-win volatility: size of the swing in match_p1 from the next point / current game
+    cwg, clg = cond["win_game"], cond["lose_game"]
+    if in_tiebreak:
+        first_A = _tb_first_server(a, b, p1_serves)
+        A_serves = first_A if ((a + b + 1) // 2) % 2 == 0 else not first_A
+        q = pA if A_serves else (1 - pB)
+        g_w = _tb(pA, pB, a + 1, b, first_A, {})
+        g_l = _tb(pA, pB, a, b + 1, first_A, {})
+    elif p1_serves:
+        q = pA
+        g_w = game_win_prob(pA, a + 1, b)
+        g_l = game_win_prob(pA, a, b + 1)
+    else:
+        q = 1 - pB
+        g_w = 1 - game_win_prob(pB, b, a + 1)
+        g_l = 1 - game_win_prob(pB, b + 1, a)
+    vol_game = np.sqrt(game_p1 * (1 - game_p1)) * np.abs(cwg - clg)
+    vol_point = np.sqrt(q * (1 - q)) * np.abs(g_w - g_l) * np.abs(cwg - clg)
+
     # final scoreline distribution
     sl_memo = {}
     scorelines = {}
@@ -204,7 +226,8 @@ def win_probs(pA, pB, sets_won, set_games, in_tiebreak, game_state, p1_serves, b
             scorelines[score] = scorelines.get(score, 0.0) + w * p
 
     return {"match": match_p1, "set": set_p1, "game": game_p1,
-            "cond": cond, "scorelines": scorelines}
+            "cond": cond, "scorelines": scorelines,
+            "vol": {"point": vol_point, "game": vol_game}}
 
 
 _STAT_KEYS = ["first_in", "win_first", "win_second", "return_first", "return_second"]
@@ -242,6 +265,7 @@ def estimate_win_prob(p1_stats, p2_stats, score_str, game_score_str,
     out = {k: float(np.mean(probs[k])) for k in ("match", "set", "game")}
     out["cond"] = {k: float(np.mean(v)) for k, v in probs["cond"].items()}
     out["scorelines"] = {k: float(np.mean(v)) for k, v in probs["scorelines"].items()}
+    out["vol"] = {k: float(np.mean(v)) for k, v in probs["vol"].items()}
     return out
 
 
@@ -295,6 +319,7 @@ def estimate_win_prob_market(pA0, pB0, wonA, playedA, wonB, playedB,
     out = {k: float(np.mean(probs[k])) for k in ("match", "set", "game")}
     out["cond"] = {k: float(np.mean(v)) for k, v in probs["cond"].items()}
     out["scorelines"] = {k: float(np.mean(v)) for k, v in probs["scorelines"].items()}
+    out["vol"] = {k: float(np.mean(v)) for k, v in probs["vol"].items()}
     out["pa_blend"] = float((N * pA0 + wonA) / (N + playedA)) if (N + playedA) else pA0
     out["pb_blend"] = float((N * pB0 + wonB) / (N + playedB)) if (N + playedB) else pB0
     out["wt_a"] = N / (N + playedA) if (N + playedA) else 1.0
