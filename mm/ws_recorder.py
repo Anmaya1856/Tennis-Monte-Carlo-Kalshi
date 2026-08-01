@@ -106,10 +106,10 @@ class Book:
                 self.no.get(no_best) if no_best is not None else None)
 
 
-def discover():
-    """All open market tickers across the SERIES list, via REST (paginated)."""
+def discover(series_list=None):
+    """All open market tickers across the given series list, via REST (paginated)."""
     tickers = []
-    for series in SERIES:
+    for series in (series_list or SERIES):
         cursor = ""
         while True:
             r = requests.get(f"{REST_URL}/markets",
@@ -126,7 +126,9 @@ def discover():
 
 async def record(tickers, duration):
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH)
+    # WAL: analysis reads never block writes; timeout rides out any residual lock
+    db = sqlite3.connect(DB_PATH, timeout=30)
+    db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
 
     auto = not tickers
