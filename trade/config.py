@@ -50,6 +50,13 @@ LOG_DIR = "data/logs"
 # parallel/restarted runs never collide.
 LOG_SUFFIX = datetime.datetime.now().strftime("_%Y%m%d_%H%M%S")
 
+# Auto-launch: the monitor discovers live matches in these Kalshi series and spawns
+# a bot process per match (no manual entry). Set AUTO_LAUNCH = False to disable.
+AUTO_LAUNCH = True
+AUTO_LAUNCH_SERIES = ("KXATPMATCH", "KXATPCHALLENGERMATCH")
+AUTO_LAUNCH_MAX = 12          # cap on concurrent auto-launched matches
+AUTO_LAUNCH_POLL_SECS = 60    # how often to scan Kalshi for newly-live matches
+
 # Match configuration
 # Each entry: event_ticker, and optional budget (dollars; defaults to MATCH_BUDGET).
 # milestone_id, best_of, canonical ticker, and p1 identity are all resolved automatically.

@@ -213,6 +213,43 @@ _GAME_SCORE_MAP = {0: 0, 15: 1, 30: 2, 40: 3, 50: 4}
 _INT_TO_NOTATION = {0: '0', 1: '15', 2: '30', 3: '40', 4: 'Ad'}
 
 
+def discover_live_events(series=("KXATPMATCH", "KXATPCHALLENGERMATCH"), lookback_hours=6):
+    """Currently-live matches in the given Kalshi series. Returns [(event_ticker,
+    milestone_id), ...]. Filters the milestone list by event-ticker prefix and
+    start_date (the list 'status' is unreliable), then confirms live via live_data."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mind = (now - datetime.timedelta(hours=lookback_hours + 2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{cfg.KALSHI_BASE}/trade-api/v2/milestones"
+    params = {"limit": 1000, "minimum_start_date": mind, "category": "Sports",
+              "type": "tennis_tournament_singles"}
+    try:
+        resp = requests.get(url, params=params, timeout=12)
+        if not resp.ok:
+            return []
+        milestones = resp.json().get("milestones", [])
+    except Exception:
+        return []
+
+    out = []
+    for m in milestones:
+        det = m.get("details", {}) or {}
+        ev = det.get("main_game_event_ticker") or ""
+        if not ev or ev.split("-")[0] not in series:
+            continue
+        sd = det.get("start_date")
+        if sd:                          # skip clearly-future / ancient to limit live checks
+            try:
+                sdt = datetime.datetime.strptime(sd, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=datetime.timezone.utc)
+                if sdt > now + datetime.timedelta(minutes=10) or now - sdt > datetime.timedelta(hours=lookback_hours):
+                    continue
+            except ValueError:
+                pass
+        if fetch_milestone(m["id"]) is not None:     # authoritative live check
+            out.append((ev, m["id"]))
+    return out
+
+
 def fetch_best_of(milestone_id):
     """GET /milestones/{id} (static match metadata). Returns best_of as int, or None.
     Separate endpoint from the live-data poll; called once per match at init."""

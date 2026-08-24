@@ -7,7 +7,7 @@ trades.
 
 Run:  python -m webapp.app   ->  http://localhost:8050
 """
-import datetime, glob, os, subprocess, sys
+import datetime, glob, os, subprocess, sys, threading, time
 
 import dash
 import pandas as pd
@@ -16,6 +16,7 @@ from dash import Dash, dcc, html, ctx, Input, Output, State, ALL
 
 import trade.config as cfg
 from trade.decision import edge_threshold
+from trade.kalshi_client import discover_live_events
 from trade.exact import (win_probs, win_prob_forward, weighted_quantile,
                          _parse_match_state, _parse_game_score, _parse_score, _is_set_complete)
 
@@ -673,5 +674,46 @@ def stop_match(clicks):
     return f"stop requested for {event} — process will exit within a second"
 
 
+# ── auto-launch ───────────────────────────────────────────────────────────────
+def _running_events():
+    """Event tickers that already have a live bot: fresh snapshot logs, plus a
+    recent spawn-lock file (covers bots that started but aren't live-logging yet).
+    The lock file survives a web-app reload, so we never double-spawn a match."""
+    evs = {tk.rsplit("-", 1)[0] for tk in active_matches()}
+    for f in glob.glob(os.path.join(LOG_DIR, ".spawn_*.lock")):
+        if time.time() - os.path.getmtime(f) < 300:
+            evs.add(os.path.basename(f)[len(".spawn_"):-len(".lock")])
+    return evs
+
+
+def _auto_launch_loop():
+    while True:
+        try:
+            live = discover_live_events(tuple(cfg.AUTO_LAUNCH_SERIES))
+            active = _running_events()
+            for ev, _mid in live:
+                if len(active) >= cfg.AUTO_LAUNCH_MAX:
+                    break
+                if ev in active:
+                    continue
+                try:
+                    subprocess.Popen([sys.executable, "-m", "trade.trade_bot", ev], cwd=REPO_ROOT)
+                    open(os.path.join(LOG_DIR, f".spawn_{ev}.lock"), "w").close()
+                    active.add(ev)
+                    print(f"[auto] launched {ev}  ({len(live)} live in series)")
+                except Exception as e:
+                    print(f"[auto] spawn failed {ev}: {e}")
+        except Exception as e:
+            print(f"[auto] discovery error: {e}")
+        time.sleep(cfg.AUTO_LAUNCH_POLL_SECS)
+
+
+_DEBUG = True   # hot reload
+
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=8050, debug=True)   # debug=True enables hot reload
+    # Start the auto-launcher once, in the process that actually serves (not the
+    # Werkzeug reloader parent), so bots aren't spawned twice under hot reload.
+    if cfg.AUTO_LAUNCH and (os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not _DEBUG):
+        threading.Thread(target=_auto_launch_loop, daemon=True).start()
+        print(f"[auto] auto-launch ON for {cfg.AUTO_LAUNCH_SERIES} (max {cfg.AUTO_LAUNCH_MAX})")
+    app.run(host="127.0.0.1", port=8050, debug=_DEBUG)
