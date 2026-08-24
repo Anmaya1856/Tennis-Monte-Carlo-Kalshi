@@ -184,6 +184,30 @@ def test_bp_pressure_keeps_even_match_symmetric(monkeypatch):
     ex = estimate_win_prob(EVEN, EVEN, "0-0", "0-0", True, 3, n_draws=1)
     assert ex["match"] == pytest.approx(0.5, abs=1e-9)
 
+def test_forward_martingale_and_normalization():
+    from trade.exact import win_prob_forward
+    fwd = win_prob_forward(0.66, 0.62, (0, 0), (0, 0), False, (0, 0), True, 3, max_games=6)
+    p0 = fwd["levels"][0][0][0]
+    for lvl in fwd["levels"]:
+        assert abs(sum(p for _, p in lvl) - 1.0) < 1e-9          # a proper distribution
+        assert abs(sum(v * p for v, p in lvl) - p0) < 1e-9       # martingale: mean == now
+    assert abs(sum(p for _, p in fwd["set_dist"]) - 1.0) < 1e-9
+    assert abs(sum(v * p for v, p in fwd["set_dist"]) - p0) < 1e-9
+
+def test_forward_martingale_midmatch():
+    # mid-match, partial game, one set each — martingale must still hold exactly
+    from trade.exact import win_prob_forward
+    fwd = win_prob_forward(0.68, 0.60, (1, 1), (4, 3), False, (2, 1), False, 5, max_games=5)
+    p0 = fwd["levels"][0][0][0]
+    for lvl in fwd["levels"]:
+        assert abs(sum(v * p for v, p in lvl) - p0) < 1e-9
+
+def test_forward_cone_widens():
+    from trade.exact import win_prob_forward, weighted_quantile
+    fwd = win_prob_forward(0.64, 0.62, (0, 0), (0, 0), False, (0, 0), True, 3, max_games=6)
+    spread = lambda lvl: weighted_quantile(lvl, 0.95) - weighted_quantile(lvl, 0.05)
+    assert spread(fwd["levels"][6]) > spread(fwd["levels"][1])   # uncertainty grows
+
 def test_vol_present_and_nonnegative():
     ex = estimate_win_prob(STRONG, EVEN, "6-4 3-2", "30-15", True, 3, n_draws=1)
     assert set(ex["vol"]) == {"point", "game"}

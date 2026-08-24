@@ -5,6 +5,8 @@ evaluated exactly (no dice-rolling), so the only remaining noise is stat-draw
 variance. All computations are vectorized across draws: probabilities are numpy
 arrays of shape (n_draws,).
 """
+from collections import defaultdict
+
 import numpy as np
 
 import trade.config as cfg
@@ -271,6 +273,116 @@ def win_probs(pA, pB, sets_won, set_games, in_tiebreak, game_state, p1_serves, b
     return {"match": match_p1, "set": set_p1, "game": game_p1,
             "cond": cond, "scorelines": scorelines,
             "vol": {"point": vol_point, "game": vol_game}}
+
+
+def weighted_quantile(pairs, q):
+    """q-quantile of a list of (value, prob) pairs (probs need not sum to 1)."""
+    if not pairs:
+        return None
+    pairs = sorted(pairs)
+    total = sum(p for _, p in pairs) or 1.0
+    cum = 0.0
+    for v, p in pairs:
+        cum += p
+        if cum >= q * total:
+            return v
+    return pairs[-1][0]
+
+
+def win_prob_forward(pA, pB, sets_won, set_games, in_tiebreak, game_state,
+                     p1_serves, best_of, max_games=6):
+    """Exact forward distribution of p1's match win prob at each of the next
+    `max_games` game boundaries, plus its distribution when the current set ends.
+
+    An exact DP forward walk over game-boundary states (each carrying its
+    probability), evaluating the win prob at every node via win_probs. pA/pB are
+    scalar point-estimate point-win probs. Returns
+      {"levels":   [ [(winpct, prob), ...] for k in 0..max_games ],
+       "set_dist": [(winpct, prob), ...] at current-set completion}.
+    levels[0] is the current win prob (a single point mass). Because win prob is a
+    martingale, each level's probability-weighted mean equals levels[0]."""
+    need = best_of // 2 + 1
+    holdA, holdB = float(game_win_prob(pA)), float(game_win_prob(pB))
+    sa0, sb0 = sets_won
+    ga0, gb0 = set_games
+    a, b = game_state
+
+    wp_memo = {}
+
+    def winpct(sa, sb, ga, gb, srv):
+        if sa >= need:
+            return 1.0
+        if sb >= need:
+            return 0.0
+        key = (sa, sb, ga, gb, srv)
+        if key not in wp_memo:
+            wp_memo[key] = float(win_probs(pA, pB, (sa, sb), (ga, gb),
+                                           ga == 6 and gb == 6, (0, 0), srv, best_of)["match"])
+        return wp_memo[key]
+
+    def step(state):
+        """Successors (state, prob) of a fresh-game boundary state."""
+        sa, sb, ga, gb, srv = state
+        if sa >= need or sb >= need:
+            return [(state, 1.0)]
+        if ga == 6 and gb == 6:
+            tb1 = float(_tb(pA, pB, 0, 0, srv, {}))
+            return [((sa + 1, sb, 0, 0, not srv), tb1),
+                    ((sa, sb + 1, 0, 0, not srv), 1 - tb1)]
+        p1g = holdA if srv else 1 - holdB
+        w = ((sa + 1, sb, 0, 0, not srv) if ga + 1 >= 6 and ga + 1 - gb >= 2
+             else (sa, sb, ga + 1, gb, not srv))
+        l = ((sa, sb + 1, 0, 0, not srv) if gb + 1 >= 6 and gb + 1 - ga >= 2
+             else (sa, sb, ga, gb + 1, not srv))
+        return [(w, p1g), (l, 1 - p1g)]
+
+    p0 = float(win_probs(pA, pB, (sa0, sb0), (ga0, gb0), in_tiebreak,
+                         game_state, p1_serves, best_of)["match"])
+    levels = [[(p0, 1.0)]]
+
+    # level 1: resolve the current (possibly partial) game / tiebreak
+    if in_tiebreak:
+        first_A = _tb_first_server(a, b, p1_serves)
+        gp1 = float(_tb(pA, pB, a, b, first_A, {}))
+        succ = [((sa0 + 1, sb0, 0, 0, not first_A), gp1),
+                ((sa0, sb0 + 1, 0, 0, not first_A), 1 - gp1)]
+    else:
+        gp1 = float(game_win_prob(pA, a, b)) if p1_serves else 1 - float(game_win_prob(pB, b, a))
+        nsrv = not p1_serves
+        w = ((sa0 + 1, sb0, 0, 0, nsrv) if ga0 + 1 >= 6 and ga0 + 1 - gb0 >= 2
+             else (sa0, sb0, ga0 + 1, gb0, nsrv))
+        l = ((sa0, sb0 + 1, 0, 0, nsrv) if gb0 + 1 >= 6 and gb0 + 1 - ga0 >= 2
+             else (sa0, sb0, ga0, gb0 + 1, nsrv))
+        succ = [(w, gp1), (l, 1 - gp1)]
+    dist = defaultdict(float)
+    for st, pr in succ:
+        dist[st] += pr
+    levels.append([(winpct(*st), pr) for st, pr in dist.items()])
+
+    cur = dict(dist)
+    for _ in range(2, max_games + 1):
+        nxt = defaultdict(float)
+        for st, pr in cur.items():
+            for st2, pr2 in step(st):
+                nxt[st2] += pr * pr2
+        cur = nxt
+        levels.append([(winpct(*st), pr) for st, pr in cur.items()])
+
+    # distribution of the win prob at the moment the current set completes
+    setdone = defaultdict(float)
+    frontier = dict(dist)
+    while frontier:
+        nf = defaultdict(float)
+        for st, pr in frontier.items():
+            if st[0] + st[1] > sa0 + sb0:
+                setdone[st] += pr
+            else:
+                for st2, pr2 in step(st):
+                    nf[st2] += pr * pr2
+        frontier = nf
+    set_dist = [(winpct(*st), pr) for st, pr in setdone.items()]
+
+    return {"levels": levels, "set_dist": set_dist}
 
 
 _STAT_KEYS = ["first_in", "win_first", "win_second", "return_first", "return_second"]
