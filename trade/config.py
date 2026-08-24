@@ -37,7 +37,7 @@ DRY_RUN           = True
 # per-server point probs, then blend with in-match service counts.
 MARKET_PRIOR_N = 40       # market-implied point probs worth this many virtual service points
 INVERSION_BASE = 0.64     # assumed tour-average serve level; fixes the overall level in the inversion
-GAME_THRESHOLDS = [16.5, 17.5, 18.5, 19.5, 20.5, 21.5, 22.5, 25.5, 26.5, 27.5, 30.5]  # log P(total match games > X) for each; changeable
+GAME_THRESHOLDS = [16.5, 17.5, 18.5, 19.5, 20.5, 21.5, 22.5, 23.5, 25.5, 26.5, 27.5, 30.5]  # log P(total match games > X) for each; changeable
 
 # Kalshi API credentials
 API_KEY     = "982c924c-9e22-44c8-a801-3be1ff50d45d"
