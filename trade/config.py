@@ -16,6 +16,11 @@ STOP_LOSS_MIN_DOLLARS = 0.04  # stop distance is max(STOP_LOSS_PCT * entry, this
 TRAIL_ARM_DOLLARS      = 0.05  # arm trailing lock once price is this far above entry
 TRAIL_GIVEBACK_DOLLARS = 0.05  # once armed, exit when price falls this far from its high
 ENTRY_GAME_PROB_MIN = 0.30  # defer entry while our side's current-game win prob is below this
+# Fragility filter: block an entry if a single lost game/set would drop our side's
+# match win prob by more than this (avoids "short-gamma" entries — e.g. buying the
+# server right before a possible break). Set high (e.g. 1.0) to disable.
+MAX_ENTRY_GAME_DRAWDOWN = 0.15
+MAX_ENTRY_SET_DRAWDOWN  = 0.35
 REENTRY_GUARD_SECS  = 180   # after a trail exit, block same-side re-entry at >= exit price for this long
 KELLY_FRACTION    = 1  #0.5 for half Kelly
 COOLDOWN_SECONDS  = 300

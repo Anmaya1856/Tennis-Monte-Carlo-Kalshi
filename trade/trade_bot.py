@@ -257,7 +257,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         target_match=mc_prob,
     )
 
-    _store.update_mc_prob(key, mc_prob, game_prob)
+    _store.update_mc_prob(key, mc_prob, game_prob, probs["cond"])
     _store.record_sim(key, score_key)
 
     # Divergence stand-down: sustained large model-market disagreement means
@@ -323,6 +323,20 @@ def _check_entry(key, cached, mc_prob, p1_ask, p2_ask):
         if game_prob < cfg.ENTRY_GAME_PROB_MIN:
             print(f"[entry] deferred {ticker}: {player.upper()} game-win prob "
                   f"{game_prob:.2f} < {cfg.ENTRY_GAME_PROB_MIN}")
+            return
+
+    # Fragility filter: skip "short-gamma" entries where a single lost game/set
+    # would crater our side (e.g. buying the server right before a possible break).
+    if ms.last_cond is not None and ms.last_mc_prob is not None:
+        c, m = ms.last_cond, ms.last_mc_prob
+        if player == "p1":
+            down_game, down_set = m - c["lose_game"], m - c["lose_set"]
+        else:
+            down_game, down_set = c["win_game"] - m, c["win_set"] - m
+        if down_game > cfg.MAX_ENTRY_GAME_DRAWDOWN or down_set > cfg.MAX_ENTRY_SET_DRAWDOWN:
+            print(f"[entry] blocked {ticker}: {player.upper()} too fragile — "
+                  f"lose-game drop {down_game:.2f} (max {cfg.MAX_ENTRY_GAME_DRAWDOWN}), "
+                  f"lose-set drop {down_set:.2f} (max {cfg.MAX_ENTRY_SET_DRAWDOWN})")
             return
 
     # Re-entry guard: after a trail exit, don't buy the same side back at or

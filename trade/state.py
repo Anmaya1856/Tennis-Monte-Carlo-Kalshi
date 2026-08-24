@@ -11,6 +11,7 @@ class MatchState:
     cooldown_until: float = 0.0    # unix timestamp; 0 = no cooldown
     last_mc_prob: float = None     # updated on each successful sim
     last_game_prob: float = None   # p1's current-game win prob at last successful sim
+    last_cond: dict = None         # p1's branch match probs {win_game,lose_game,win_set,lose_set}
     trail_exit: dict = None        # {player, price, time} of last trail_lock exit
     last_sim_score: tuple = None   # (score_str, game_score_str, p1_serves) at last successful sim
     last_sim_time: float = 0.0     # unix timestamp of last successful sim
@@ -34,10 +35,11 @@ class MatchStateStore:
     def restore_proceeds(self, ticker, proceeds):
         self.get_or_create(ticker).budget_remaining += proceeds
 
-    def update_mc_prob(self, ticker, mc_prob, game_prob=None):
+    def update_mc_prob(self, ticker, mc_prob, game_prob=None, cond=None):
         ms = self.get_or_create(ticker)
         ms.last_mc_prob = mc_prob
         ms.last_game_prob = game_prob
+        ms.last_cond = cond
 
     def update_divergence(self, ticker, mc_prob, market_mid):
         """Update the divergence EMA and the stand-down state (with hysteresis).
