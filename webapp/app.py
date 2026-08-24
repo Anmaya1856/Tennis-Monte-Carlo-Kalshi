@@ -113,10 +113,6 @@ def _pct(x, d=1):
     return f"{x * 100:.{d}f}%" if x is not None else "—"
 
 
-def _cents(x):
-    return f"{x:.2f}" if x is not None else "—"
-
-
 def _price(x):
     """Market price as whole cents — directly comparable to a model percentage."""
     return f"{x * 100:.0f}¢" if x is not None else "—"
@@ -441,26 +437,46 @@ def build_card(ticker, g):
                    p2_bg, p2_bs),
     ], className="pcol-grid")
 
-    # footer
+    # footer — what we hold, what it's worth, and what we can still spend
     side = last.get("position_side")
     budget = _num(last, "budget_remaining")
     standdown = str(last.get("standdown")) in ("1", "1.0", "True")
-    if side in ("p1", "p2"):
-        ep, cnt = _num(last, "position_entry_price"), _num(last, "position_count")
-        cur, upnl = _num(last, "position_current_value"), _num(last, "position_unrealized_pnl")
+    ep, cnt = _num(last, "position_entry_price"), _num(last, "position_count")
+    cur, hwm = _num(last, "position_current_value"), _num(last, "position_high_water")
+    upnl, dv = _num(last, "position_unrealized_pnl"), _num(last, "divergence_ema")
+
+    def ft_tile(label, value, sub, color=None, small=False):
+        return html.Div([
+            html.Div(label, className="ft-label"),
+            html.Div(value, className="ft-val ft-val-sm" if small else "ft-val",
+                     style={"color": color} if color else None),
+            html.Div(sub, className="ft-sub"),
+        ], className="ft-tile")
+
+    if side in ("p1", "p2") and upnl is not None:
         who = p1 if side == "p1" else p2
-        pos = html.Span([html.Span("● ", style={"color": P1C if side == "p1" else P2C}),
-                         f"{who} @{_cents(ep)} ×{cnt:g}  now {_cents(cur)}  ",
-                         html.Span(f"${upnl:+.2f}", style={"color": GOOD if (upnl or 0) >= 0 else CRIT,
-                                                           "fontWeight": 700})]
-                        if upnl is not None else "—")
+        tiles = [
+            ft_tile("HOLDING",
+                    html.Span([html.Span("● ", style={"color": P1C if side == "p1" else P2C}),
+                               f"{who} YES"]),
+                    f"×{cnt:g} contracts" if cnt is not None else "", small=True),
+            ft_tile("ENTRY", _price(ep), "we paid"),
+            ft_tile("WORTH NOW", _price(cur),
+                    f"peaked at {_price(hwm)}" if hwm is not None else "at market bid"),
+            ft_tile("UNREALIZED", f"${upnl:+.2f}", "if we sold now",
+                    GOOD if upnl >= 0 else CRIT),
+        ]
     else:
-        pos = html.Span("No position", style={"color": MUTED})
+        tiles = [ft_tile("HOLDING", "FLAT", "nothing open", MUTED, small=True)]
+    tiles.append(ft_tile("BUDGET LEFT", f"${budget:.2f}" if budget is not None else "—",
+                         "free to spend"))
+    tiles.append(ft_tile("ENTRIES", "PAUSED" if standdown else "ACTIVE",
+                         f"model−market {dv:.2f}" if dv is not None else "stand-down status",
+                         WARN if standdown else GOOD))
+
     footer = html.Div([
-        html.Div(pos, className="pos"),
-        html.Div([html.Span("⏸ STANDDOWN", className="standdown") if standdown else None,
-                  html.Span(f"budget ${budget:.2f}" if budget is not None else "", className="budget")],
-                 className="foot-right"),
+        html.Div("OUR POSITION  ·  RISK", className="grp-label"),
+        html.Div(tiles, className="ft-grid"),
     ], className="card-foot")
 
     fwd = compute_forward(last)
@@ -617,11 +633,16 @@ app.index_string = """<!DOCTYPE html><html><head>{%metas%}<title>{%title%}</titl
   .chart { margin-top:10px; }
   .chart-grid2 { display:grid; grid-template-columns:3fr 2fr; gap:14px; margin-top:10px; }
 
-  .card-foot { display:flex; align-items:center; margin-top:12px; padding-top:13px;
-               border-top:1px solid """ + HAIR + """; font-size:16px; font-variant-numeric:tabular-nums; }
-  .foot-right { margin-left:auto; display:flex; align-items:center; gap:16px; }
-  .standdown { color:""" + WARN + """; font-weight:700; font-size:16px; }
-  .budget { color:""" + INK2 + """; }
+  .card-foot { margin-top:14px; padding-top:4px; border-top:1px solid """ + HAIR + """;
+               font-variant-numeric:tabular-nums; }
+  .ft-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(152px, 1fr)); gap:11px; }
+  .ft-tile { background:""" + INSET + """; border:1px solid """ + HAIR + """; border-radius:9px;
+             padding:9px 12px 8px; }
+  .ft-label { font-size:14px; font-weight:700; letter-spacing:.06em; color:""" + MUTED + """; }
+  .ft-val { font-size:26px; font-weight:700; line-height:1.2; color:""" + INK + """;
+            font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .ft-val-sm { font-size:20px; }
+  .ft-sub { font-size:13px; color:""" + MUTED + """; }
 
   .tradelog { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
   .tradelog th { text-align:left; color:""" + MUTED + """; font-weight:600; font-size:16px;
