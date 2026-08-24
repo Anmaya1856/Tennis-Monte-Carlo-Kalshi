@@ -117,6 +117,11 @@ def _cents(x):
     return f"{x:.2f}" if x is not None else "—"
 
 
+def _price(x):
+    """Market price as whole cents — directly comparable to a model percentage."""
+    return f"{x * 100:.0f}¢" if x is not None else "—"
+
+
 def _last_name(n):
     parts = str(n).split()
     return parts[-1] if parts else str(n)
@@ -201,13 +206,20 @@ def player_col(nm, color, match, bid, ask, game, sett, br_game, br_set):
                          html.Div(_pct(val, 1), className="gsm-val")],
                         className="gsm-cell", style={"textAlign": align})
 
+    def book_tile(label, price, sub):
+        return html.Div([html.Div(label, className="bk-label"),
+                         html.Div(_price(price), className="bk-val"),
+                         html.Div(sub, className="bk-sub")], className="bk-tile")
+
     return html.Div([
         html.Div([html.Span(className="dot", style={"background": color}),
                   html.Span(nm, className="col-name"), badge], className="col-head"),
+        html.Div("MODEL  ·  WIN PROBABILITY", className="grp-label"),
         html.Div([gsm("GAME", game, "left"), gsm("SET", sett, "center"),
                   gsm("MATCH", match, "right")], className="gsm-grid"),
-        html.Div([html.Span(f"bid {_cents(bid)}"), html.Span(f"ask {_cents(ask)}")],
-                 className="col-book"),
+        html.Div("MARKET  ·  KALSHI ORDER BOOK", className="grp-label"),
+        html.Div([book_tile("BID", bid, "sell YES here"),
+                  book_tile("ASK", ask, "buy YES here")], className="bk-grid"),
         html.Div([
             html.Div("if this game …", className="rb-label"),
             range_bar(*br_game, color),
@@ -548,13 +560,22 @@ app.index_string = """<!DOCTYPE html><html><head>{%metas%}<title>{%title%}</titl
   .col-name { font-size:16px; font-weight:700; letter-spacing:.01em; }
   .badge { font-size:16px; font-weight:800; letter-spacing:.05em; color:#04140a;
            background:""" + GOOD + """; padding:3px 8px; border-radius:5px; }
-  .gsm-grid { display:flex; justify-content:space-between; align-items:flex-end; padding:10px 0 8px; }
+  .gsm-grid { display:flex; justify-content:space-between; align-items:flex-end; padding:2px 0 4px; }
   .gsm-label { font-size:16px; font-weight:600; letter-spacing:.05em; color:""" + MUTED + """;
                margin-bottom:3px; }
   .gsm-val { font-size:30px; font-weight:700; line-height:1; color:""" + INK + """;
              font-variant-numeric:tabular-nums; }
-  .col-book { display:flex; gap:16px; font-size:16px; color:""" + INK2 + """;
-              font-variant-numeric:tabular-nums; margin:2px 0 12px; }
+
+  .grp-label { font-size:14px; font-weight:800; letter-spacing:.09em; color:""" + MUTED + """;
+               margin:13px 0 6px; padding-bottom:5px;
+               border-bottom:1px solid """ + HAIR + """; }
+  .bk-grid { display:grid; grid-template-columns:1fr 1fr; gap:11px; margin-bottom:4px; }
+  .bk-tile { background:""" + PLANE + """; border:1px solid """ + HAIR + """; border-radius:9px;
+             padding:9px 10px 8px; text-align:center; }
+  .bk-label { font-size:16px; font-weight:700; letter-spacing:.05em; color:""" + MUTED + """; }
+  .bk-val { font-size:30px; font-weight:700; line-height:1.1; color:""" + INK + """;
+            font-variant-numeric:tabular-nums; }
+  .bk-sub { font-size:13px; color:""" + MUTED + """; letter-spacing:.01em; }
 
   .svc-stats { margin-top:4px; }
   .sb2-row { display:grid; grid-template-columns:100px 1fr 210px 1fr 100px; align-items:center;
