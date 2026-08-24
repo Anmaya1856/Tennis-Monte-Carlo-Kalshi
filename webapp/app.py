@@ -16,13 +16,15 @@ from dash import Dash, dcc, html, ctx, Input, Output, State, ALL
 
 import trade.config as cfg
 from trade.decision import edge_threshold
-from trade.exact import (win_probs, _parse_match_state, _parse_game_score,
-                         _parse_score, _is_set_complete)
+from trade.exact import (win_probs, win_prob_forward, weighted_quantile,
+                         _parse_match_state, _parse_game_score, _parse_score, _is_set_complete)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(REPO_ROOT, cfg.LOG_DIR)
 ACTIVE_WINDOW_SECS = 120
 REFRESH_MS = 2000
+# logs store UTC wall-clock; shift to local time for display
+_LOCAL_OFFSET = datetime.datetime.now().astimezone().utcoffset() or datetime.timedelta(0)
 
 # ── design tokens (dark surface; validated categorical + status palette) ──────
 SURFACE, PLANE, INSET = "#1a1a19", "#0d0d0d", "#26261f"
@@ -255,8 +257,24 @@ def over_under_readout(last):
     ])
 
 
-def fan_fig(g, p1):
-    ts = pd.to_datetime(g["timestamp"], errors="coerce", utc=True)
+def compute_forward(last, max_games=6):
+    """win_prob_forward from the logged point probs, or None if unavailable."""
+    pa, pb = _num(last, "pa_blend"), _num(last, "pb_blend")
+    if pa is None or pb is None:
+        return None
+    try:
+        best_of = int(float(last.get("best_of") or 3))
+        sets_won, cur = _parse_match_state(str(last.get("score_str") or "0-0"), best_of)
+        in_tb = cur == (6, 6)
+        gs = _parse_game_score(str(last.get("game_score_str") or "0-0"), is_tiebreak=in_tb)
+        return win_prob_forward(pa, pb, sets_won, cur or (0, 0), in_tb, gs,
+                                last.get("server") == "p1", best_of, max_games=max_games)
+    except Exception:
+        return None
+
+
+def fan_fig(g, p1, fwd):
+    ts = pd.to_datetime(g["timestamp"], errors="coerce") + _LOCAL_OFFSET   # UTC log -> local, tz-naive
     mc = pd.to_numeric(g.get("mc_prob_p1"), errors="coerce") * 100
     ask = pd.to_numeric(g.get("kalshi_p1_ask"), errors="coerce")
     bid = pd.to_numeric(g.get("kalshi_p1_bid"), errors="coerce")
@@ -268,16 +286,69 @@ def fan_fig(g, p1):
     fig.add_scatter(x=ts, y=mc, name=f"model {p1}", mode="lines",
                     line=dict(color=P1C, width=2.5, shape="spline"),
                     hovertemplate="model %{y:.0f}%<extra></extra>")
+
+    # forward cone: martingale median (flat) with widening percentile bands
+    now = ts.dropna().max()
+    x_lo, x_hi = ts.dropna().min(), now
+    if fwd and pd.notna(now):
+        levels = fwd["levels"]
+        dt = pd.Timedelta(minutes=3.5)   # rough games→time mapping for the x-axis
+        fx = [now + k * dt for k in range(len(levels))]
+        x_hi = fx[-1]
+        q = {p: [(weighted_quantile(lvl, p) or 0) * 100 for lvl in levels]
+             for p in (0.05, 0.25, 0.5, 0.75, 0.95)}
+        band = lambda lo, hi, a, nm: (
+            fig.add_scatter(x=fx, y=q[lo], mode="lines", line=dict(width=0),
+                            showlegend=False, hoverinfo="skip"),
+            fig.add_scatter(x=fx, y=q[hi], mode="lines", line=dict(width=0), fill="tonexty",
+                            fillcolor=f"rgba(57,135,229,{a})", name=nm, hoverinfo="skip"))
+        band(0.05, 0.95, 0.12, "5–95%")
+        band(0.25, 0.75, 0.22, "25–75%")
+        fig.add_scatter(x=fx, y=q[0.5], mode="lines", name="forecast",
+                        line=dict(color=P1C, width=2, dash="dash"),
+                        hovertemplate="median %{y:.0f}%<extra></extra>")
+        fig.add_vline(x=now, line=dict(color=BASE, width=1, dash="dot"))
+
     fig.update_layout(
         paper_bgcolor=SURFACE, plot_bgcolor=SURFACE, height=340,
         margin=dict(l=40, r=14, t=46, b=30), hovermode="x unified",
         font=dict(color=INK2, size=14, family='system-ui,-apple-system,"Segoe UI",sans-serif'),
-        title=dict(text=f"<b>{p1} win% vs Kalshi price</b>", font=dict(size=18, color=INK),
+        title=dict(text=f"<b>{p1} win% — history & forecast cone</b>", font=dict(size=18, color=INK),
                    x=0, y=0.97, yanchor="top"),
         legend=dict(orientation="h", y=1.14, x=1, xanchor="right", font=dict(size=15),
                     bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BASE),
+        xaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BASE,
+                   range=[x_lo, x_hi] if pd.notna(x_lo) and pd.notna(x_hi) else None),
         yaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BASE, range=[0, 100], ticksuffix="%"))
+    return fig
+
+
+def dist_fig(fwd, p1, p2):
+    """Histogram of p1's match win% at the far end of the forecast — many states
+    are reachable there, so it shows the distribution shape (spread / skew /
+    bimodality) that the cone's percentile bands can't."""
+    fig = go.Figure()
+    khoriz = (len(fwd["levels"]) - 1) if fwd and fwd["levels"] else 0
+    pairs = fwd["levels"][-1] if fwd and fwd["levels"] else []
+    if pairs:
+        nbins = 13
+        binp = [0.0] * nbins
+        for v, p in pairs:
+            binp[min(int(v * nbins), nbins - 1)] += p
+        centers = [(i + 0.5) * 100 / nbins for i in range(nbins)]
+        colors = [P1C if c >= 50 else P2C for c in centers]
+        fig.add_bar(x=centers, y=[b * 100 for b in binp], marker_color=colors,
+                    width=100 / nbins * 0.88, marker_line_width=0,
+                    hovertemplate="%{x:.0f}% win: %{y:.1f}% chance<extra></extra>")
+    fig.update_layout(
+        paper_bgcolor=SURFACE, plot_bgcolor=SURFACE, height=340,
+        margin=dict(l=40, r=14, t=46, b=30), bargap=0.06,
+        font=dict(color=INK2, size=14, family='system-ui,-apple-system,"Segoe UI",sans-serif'),
+        title=dict(text=f"<b>{p1} win% in {khoriz} games</b>", font=dict(size=18, color=INK),
+                   x=0, y=0.97, yanchor="top"),
+        xaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BASE, range=[0, 100],
+                   ticksuffix="%", title=dict(text=f"← {p2}    {p1} →", font=dict(size=13))),
+        yaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BASE, ticksuffix="%"))
     return fig
 
 
@@ -379,11 +450,15 @@ def build_card(ticker, g):
                  className="foot-right"),
     ], className="card-foot")
 
+    fwd = compute_forward(last)
+    charts = html.Div([
+        dcc.Graph(figure=fan_fig(g, p1, fwd), config={"displayModeBar": False}, className="chart"),
+        dcc.Graph(figure=dist_fig(fwd, p1, p2), config={"displayModeBar": False}, className="chart"),
+    ], className="chart-grid2")
+
     return html.Div([header, ids, score, cols, service_stats(last),
                      scoreline_readout(last, best_of, p1, p2),
-                     over_under_readout(last),
-                     dcc.Graph(figure=fan_fig(g, p1), config={"displayModeBar": False},
-                               className="chart"), footer], className="card")
+                     over_under_readout(last), charts, footer], className="card")
 
 
 def build_tradelog(df):
@@ -518,6 +593,7 @@ app.index_string = """<!DOCTYPE html><html><head>{%metas%}<title>{%title%}</titl
                                                        font-weight:600; }
   .ou-table tbody td { font-weight:650; }
   .chart { margin-top:10px; }
+  .chart-grid2 { display:grid; grid-template-columns:3fr 2fr; gap:14px; margin-top:10px; }
 
   .card-foot { display:flex; align-items:center; margin-top:12px; padding-top:13px;
                border-top:1px solid """ + HAIR + """; font-size:16px; font-variant-numeric:tabular-nums; }
