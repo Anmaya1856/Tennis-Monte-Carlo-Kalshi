@@ -59,11 +59,14 @@ def _candle_price(c):
     return tr if tr and 0 < tr < 1 else None
 
 
-def fetch_prematch_price(ticker, series, est_start_ts):
-    """Last clean two-sided candle price before the match started, or None.
-    est_start_ts: unix seconds, an estimate of when play began."""
-    params = {"start_ts": int(est_start_ts - 30 * 3600),
-              "end_ts": int(est_start_ts), "period_interval": 1}
+def fetch_prematch_price(ticker, series, before_ts):
+    """Last clean candle price at or before `before_ts`, or None.
+
+    Prefers the mid of a two-sided quote (spread <= 10c) and falls back to the
+    last trade. `before_ts` is a flat offset back from now — far enough that it
+    is always pre-match, so an in-play price can never be mistaken for the prior."""
+    params = {"start_ts": int(before_ts - 30 * 3600),
+              "end_ts": int(before_ts), "period_interval": 1}
     for base in (cfg.KALSHI_BASE, "https://api.elections.kalshi.com"):
         for tail in (f"/trade-api/v2/series/{series}/markets/{ticker}/candlesticks",
                      f"/trade-api/v2/historical/markets/{ticker}/candlesticks"):
@@ -94,93 +97,235 @@ def get_best_ask_bid(ticker):
 
 
 def taker_fee(count, price):
-    """Kalshi taker fee: roundup(0.07 * C * P * (1-P)), rounded up to a centicent.
-    Our fill_or_kill orders always cross the book, so they always pay it."""
-    return math.ceil(0.07 * count * price * (1 - price) * 10000 - 1e-9) / 10000
+    """Kalshi taker fee: roundup(0.07 * C * P * (1-P)), rounded UP to the next cent.
+
+    The round-up applies once to the whole order, not per contract — which is why
+    100 contracts at 1c cost $0.07 in fees rather than 100x the $0.01 charged on a
+    single one. Reproduces Kalshi's published fee table exactly (see tests).
+    Charged whenever an order crosses the book."""
+    return math.ceil(0.07 * count * price * (1 - price) * 100 - 1e-9) / 100
 
 
-def _parse_order_response(data):
-    fill   = float(data["fill_count"])
-    price  = float(data.get("average_fill_price") or 0)
-    fee    = float(data.get("average_fee_paid")   or 0)
+def series_of(ticker):
+    """Series ticker from a market or event ticker (the part before the first '-')."""
+    return str(ticker).split("-")[0] if ticker else ""
+
+
+def maker_fee(count, price, ticker):
+    """Kalshi maker fee: roundup(M * 0.0175 * C * P * (1-P)), rounded up to a cent.
+
+    M is per-series: ATP main tour charges maker fees (M=1), Challengers do not
+    (M=0). The round-up is per order, so small lots pay a large surcharge — at 5
+    contracts a 2.2c raw fee still costs 3c."""
+    m = cfg.MAKER_FEE_MULTIPLIER.get(series_of(ticker), cfg.MAKER_FEE_MULTIPLIER_DEFAULT)
+    if m <= 0:
+        return 0.0
+    return math.ceil(m * 0.0175 * count * price * (1 - price) * 100 - 1e-9) / 100
+
+
+def fill_fee(count, price, ticker):
+    """Fee for one fill under the configured execution mode."""
+    return maker_fee(count, price, ticker) if cfg.MAKER_MODE else taker_fee(count, price)
+
+
+def _parse_order_response(data, side):
+    """Normalise a create-order response, denominated in YES.
+
+    fill_count is what matched IMMEDIATELY; a resting maker order returns 0 and
+    is not a position yet. average_fee_paid is per contract, so the total is
+    fill x fee.
+
+    Kalshi books a sell-YES as a buy-NO, so average_fill_price comes back as the
+    NO price on an ask. Everything we track is YES-denominated, so flip it:
+    selling YES at 0.05 is reported as 0.95 and must not be recorded as a 95c
+    exit. cost_dollars is then the YES value of the fill — the proceeds on a sell.
+    """
+    fill = float(data.get("fill_count") or 0)
+    price = float(data.get("average_fill_price") or 0)
+    if side == "ask" and price:
+        price = 1 - price
+    fee = float(data.get("average_fee_paid") or 0)
     return {
-        "cost_dollars": round(fill * price, 6),
-        "fee_dollars":  round(fill * fee,   6),
-        "order_id":     data["order_id"],
+        "order_id":      data["order_id"],
+        "filled":        fill,
+        "remaining":     float(data.get("remaining_count") or 0),
+        "cost_dollars":  round(fill * price, 6),
+        "fee_dollars":   round(fill * fee, 6),
+        "avg_price":     price or None,
+    }
+
+
+_shard_cache = {}
+
+
+def market_shard(ticker):
+    """Which exchange shard a market lives on. Orders must target it explicitly:
+    these series are split across shards, and routing to the wrong one returns
+    market_not_found. Cached — a market never moves."""
+    if ticker not in _shard_cache:
+        try:
+            r = requests.get(cfg.KALSHI_BASE + f"/trade-api/v2/markets/{ticker}", timeout=10)
+            _shard_cache[ticker] = r.json()["market"].get("exchange_index") if r.ok else None
+        except Exception:
+            _shard_cache[ticker] = None
+    return _shard_cache[ticker]
+
+
+def funded_shards():
+    """Shard indices where the account actually holds a balance. Ordering into a
+    shard the account has no presence on fails with user_not_found."""
+    path = "/trade-api/v2/portfolio/balance"
+    try:
+        r = requests.get(cfg.KALSHI_BASE + path, headers=_auth_headers("GET", path), timeout=10)
+        if not r.ok:
+            return set()
+        return {b["exchange_index"] for b in r.json().get("balance_breakdown", [])
+                if float(b.get("balance") or 0) > 0}
+    except Exception:
+        return set()
+
+
+def _submit(ticker, side, count, price_cents):
+    """POST a V2 event-market order. Returns the parsed response or None.
+
+    MAKER_MODE rests the order (good_till_canceled + post_only, so it can never
+    cross and accidentally pay taker fees). Otherwise fill_or_kill, which is
+    all-or-nothing and immediate.
+    """
+    path = "/trade-api/v2/portfolio/events/orders"
+    body = {
+        "ticker":                     ticker,
+        "client_order_id":            str(uuid.uuid4()),
+        "side":                       side,
+        "count":                      f"{count:.2f}",
+        "price":                      f"{price_cents / 100:.4f}",
+        "time_in_force":              "good_till_canceled" if cfg.MAKER_MODE else "fill_or_kill",
+        "self_trade_prevention_type": "taker_at_cross",
+        # These series are split across exchange shards per market. Omitting this
+        # falls back to shard 0 (market_not_found for a shard-3 market); -1 routes
+        # by ticker but can land on a shard the account has no presence on
+        # (user_not_found). Target the market's own shard explicitly.
+        "exchange_index":             market_shard(ticker) or 0,
+        **({"post_only": True} if cfg.MAKER_MODE else {}),
+    }
+    try:
+        resp = requests.post(
+            cfg.KALSHI_BASE + path,
+            headers={**_auth_headers("POST", path), "Content-Type": "application/json"},
+            json=body,
+            timeout=5,
+        )
+        if not resp.ok:
+            print(f"[kalshi] {side} order failed {resp.status_code} on {ticker} "
+                  f"({count:g} @ {price_cents}c): {resp.text}")
+            return None
+        return _parse_order_response(resp.json(), side)
+    except Exception as e:
+        print(f"[kalshi] {side} order exception: {e}")
+        return None
+
+
+def _dry_order(ticker, count, price_cents):
+    """Dry run assumes an immediate full fill at the quoted price."""
+    price = price_cents / 100
+    return {
+        "order_id":     f"dry-{uuid.uuid4()}",
+        "filled":       float(count),
+        "remaining":    0.0,
+        "cost_dollars": round(count * price, 6),
+        "fee_dollars":  fill_fee(count, price, ticker),
+        "avg_price":    price,
     }
 
 
 def place_order(ticker, count, price_cents):
-    """
-    Buy YES on a market (V2 API): "bid" order at the current ask.
-    count: contracts, supports up to 2 decimal places
-    price_cents: limit price in cents (1–99), normally the best ask
-    Returns {"cost_dollars", "fee_dollars", "order_id"} or None on failure.
-    """
+    """Buy YES. Returns the parsed order (possibly unfilled) or None on failure."""
     if cfg.DRY_RUN:
-        price = price_cents / 100
-        cost = round(count * price, 6)
-        return {"cost_dollars": cost, "fee_dollars": taker_fee(count, price),
-                "order_id": f"dry-{uuid.uuid4()}"}
-
-    path = "/trade-api/v2/orders"
-    body = {
-        "ticker":                      ticker,
-        "client_order_id":             str(uuid.uuid4()),
-        "side":                        "bid",
-        "count":                       f"{count:.2f}",
-        "price":                       f"{price_cents / 100:.4f}",
-        "time_in_force":               "fill_or_kill",
-        "self_trade_prevention_type":  "taker_at_cross",
-    }
-    try:
-        resp = requests.post(
-            cfg.KALSHI_BASE + path,
-            headers={**_auth_headers("POST", path), "Content-Type": "application/json"},
-            json=body,
-            timeout=5,
-        )
-        if not resp.ok:
-            print(f"[kalshi] order failed {resp.status_code}: {resp.text}")
-            return None
-        return _parse_order_response(resp.json())
-    except Exception as e:
-        print(f"[kalshi] order exception: {e}")
-        return None
+        return _dry_order(ticker, count, price_cents)
+    return _submit(ticker, "bid", count, price_cents)
 
 
 def close_position(ticker, count, price_cents):
-    """
-    Sell YES to close (V2 API): "ask" order at the current bid.
-    price_cents: limit price in cents, normally the best bid
-    """
-    if cfg.DRY_RUN:
-        return {"cost_dollars": 0.0, "fee_dollars": taker_fee(count, price_cents / 100),
-                "order_id": f"dry-close-{uuid.uuid4()}"}
+    """Sell YES to close. Returns the parsed order (possibly unfilled) or None.
 
-    path = "/trade-api/v2/orders"
-    body = {
-        "ticker":                      ticker,
-        "client_order_id":             str(uuid.uuid4()),
-        "side":                        "ask",
-        "count":                       f"{count:.2f}",
-        "price":                       f"{price_cents / 100:.4f}",
-        "time_in_force":               "fill_or_kill",
-        "self_trade_prevention_type":  "taker_at_cross",
-    }
+    cost_dollars is the fill VALUE, so on a sell it is the proceeds received."""
+    if cfg.DRY_RUN:
+        return _dry_order(ticker, count, price_cents)
+    return _submit(ticker, "ask", count, price_cents)
+
+
+def get_order(order_id, ticker=None):
+    """GET /portfolio/orders/{id}. Returns {status, filled, remaining, cost, fee}
+    or None. status is one of resting / canceled / executed.
+
+    Returns None on any failure, including the brief 404 right after placement
+    before the order propagates — callers treat None as transient and retry."""
+    if cfg.DRY_RUN:
+        return {"status": "executed", "filled": 0.0, "remaining": 0.0,
+                "cost_dollars": 0.0, "fee_dollars": 0.0}
+    path = f"/trade-api/v2/portfolio/orders/{order_id}"
+    params = {"exchange_index": market_shard(ticker)} if ticker else None
     try:
-        resp = requests.post(
-            cfg.KALSHI_BASE + path,
-            headers={**_auth_headers("POST", path), "Content-Type": "application/json"},
-            json=body,
-            timeout=5,
-        )
+        resp = requests.get(cfg.KALSHI_BASE + path, headers=_auth_headers("GET", path),
+                            params=params, timeout=5)
         if not resp.ok:
-            print(f"[kalshi] close failed {resp.status_code}: {resp.text}")
             return None
-        return _parse_order_response(resp.json())
+        o = resp.json()["order"]
+        filled = float(o.get("fill_count_fp") or 0)
+        # YES-denominated: maker/taker_fill_cost are in NO terms on a sell, so
+        # derive the value from yes_price instead of trusting the cost fields.
+        yes_px = float(o.get("yes_price_dollars") or 0)
+        return {
+            "status":       o["status"],
+            "filled":       filled,
+            "remaining":    float(o.get("remaining_count_fp") or 0),
+            "cost_dollars": round(filled * yes_px, 6),
+            "fee_dollars":  (float(o.get("maker_fees_dollars") or 0)
+                             + float(o.get("taker_fees_dollars") or 0)),
+            "yes_price":    yes_px or None,
+        }
     except Exception as e:
-        print(f"[kalshi] close exception: {e}")
+        print(f"[kalshi] get_order exception: {e}")
+        return None
+
+
+def cancel_order(order_id, ticker=None):
+    """Cancel a resting order. True if it is no longer working.
+
+    Must use the V2 events path with an explicit exchange_index: the V1
+    DELETE /portfolio/orders/{id} now returns 410 deprecated_v1_order_endpoint,
+    and without the shard the V2 route cannot see an order on shard 3."""
+    if cfg.DRY_RUN:
+        return True
+    path = f"/trade-api/v2/portfolio/events/orders/{order_id}"
+    params = {"exchange_index": market_shard(ticker)} if ticker else None
+    try:
+        resp = requests.delete(cfg.KALSHI_BASE + path,
+                               headers={**_auth_headers("DELETE", path),
+                                        "Content-Type": "application/json"},
+                               params=params, timeout=5)
+        if not resp.ok:
+            print(f"[kalshi] cancel {order_id} failed {resp.status_code}: {resp.text}")
+        return resp.ok
+    except Exception as e:
+        print(f"[kalshi] cancel exception: {e}")
+        return False
+
+
+def order_queue_position(order_id, ticker=None):
+    """Contracts resting ahead of our order. None if unavailable. Diagnostic only —
+    this is the number that decides whether maker fills are realistic."""
+    if cfg.DRY_RUN:
+        return None
+    path = f"/trade-api/v2/portfolio/orders/{order_id}/queue_position"
+    params = {"exchange_index": market_shard(ticker)} if ticker else None
+    try:
+        resp = requests.get(cfg.KALSHI_BASE + path,
+                            headers=_auth_headers("GET", path), params=params, timeout=5)
+        if not resp.ok:
+            return None
+        return float(resp.json().get("queue_position_fp") or 0)
+    except Exception:
         return None
 
 

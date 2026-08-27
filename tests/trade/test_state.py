@@ -30,12 +30,13 @@ def test_no_position_initially():
 def test_set_and_clear_position():
     store = make_store()
     store.get_or_create("EVENT-A")
-    store.set_position("EVENT-A", "EVENT-A-P1", 0.55, count=2.50)
+    store.set_position("EVENT-A", "EVENT-A-P1", 0.55, count=2.50, game_id="6-4 2-2")
     assert store.has_position("EVENT-A")
     ms = store.get_or_create("EVENT-A")
     assert ms.position["ticker"] == "EVENT-A-P1"
     assert ms.position["entry_price"] == 0.55
     assert ms.position["count"] == 2.50
+    assert ms.position["game_id"] == "6-4 2-2"
     store.clear_position("EVENT-A")
     assert not store.has_position("EVENT-A")
 
@@ -45,41 +46,15 @@ def test_update_mc_prob():
     store.update_mc_prob("TICKER-A", 0.63)
     assert store.get_or_create("TICKER-A").last_mc_prob == 0.63
 
-def test_cooldown_active_after_set():
+def test_divergence_ema_tracks_the_gap():
     store = make_store()
-    store.get_or_create("TICKER-A")
-    assert not store.is_in_cooldown("TICKER-A")
-    store.set_cooldown("TICKER-A")
-    assert store.is_in_cooldown("TICKER-A")
-
-def test_cooldown_expires():
-    original = cfg.COOLDOWN_SECONDS
-    cfg.COOLDOWN_SECONDS = 0
-    try:
-        store = make_store()
-        store.get_or_create("TICKER-A")
-        store.set_cooldown("TICKER-A")
-        time.sleep(0.01)
-        assert not store.is_in_cooldown("TICKER-A")
-    finally:
-        cfg.COOLDOWN_SECONDS = original
-
-def test_divergence_standdown_hysteresis():
-    store = make_store()
-    # sustained large divergence -> stand down
-    changed_at = None
-    for i in range(40):
-        sd, changed = store.update_divergence("EVENT-A", 0.80, 0.50)  # 30c divergence
-        if changed: changed_at = i
-    assert sd is True and changed_at is not None
-    # small divergence -> eventually resumes
-    for i in range(60):
-        sd, changed = store.update_divergence("EVENT-A", 0.52, 0.50)
-    assert sd is False
-    # a single spike must not trigger from zero
-    store2 = make_store()
-    sd, changed = store2.update_divergence("EVENT-B", 0.90, 0.50)
-    assert sd is False
+    # a single spike barely moves the EMA from zero
+    first = store.update_divergence("EVENT-A", 0.90, 0.50)
+    assert 0 < first < 0.05
+    # sustained 30c divergence converges toward it
+    for _ in range(200):
+        ema = store.update_divergence("EVENT-A", 0.80, 0.50)
+    assert abs(ema - 0.30) < 0.01
 
 def test_budget_exhausted():
     store = make_store()

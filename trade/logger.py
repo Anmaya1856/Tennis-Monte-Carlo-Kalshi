@@ -1,4 +1,4 @@
-import csv, os, datetime
+import csv, os, datetime, time
 import trade.config as cfg
 
 _GAMES_COLS = [f"p_games_over_{str(t).replace('.', '_')}" for t in cfg.GAME_THRESHOLDS]
@@ -15,9 +15,12 @@ _SNAPSHOT_COLS = [
     "mc_vol_point", "mc_vol_game",
     "cond_win_game", "cond_lose_game", "cond_win_set", "cond_lose_set",
     "kalshi_p1_ask", "kalshi_p1_bid", "kalshi_p2_ask", "kalshi_p2_bid",
-    "position_side", "position_entry_price", "position_count", "position_high_water",
+    "position_side", "position_entry_price", "position_count", "position_game_id",
     "position_current_value", "position_unrealized_pnl", "budget_remaining",
-    "divergence_ema", "standdown",
+    # resting order state: the only way to measure maker fill rate after the fact
+    "pending_kind", "pending_price", "pending_count", "pending_filled",
+    "pending_age_secs", "queue_ahead",
+    "divergence_ema",
     # market-implied prior (live model)
     "prematch_price", "pa0", "pb0", "pa_blend", "pb_blend",
     # derived DP distributions (point estimate; forward-looking from current score)
@@ -62,10 +65,20 @@ def _now_str():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+_LOG_DATE = datetime.date.today().strftime("%Y%m%d")
+
+
+def _suffix(ticker):
+    """One file per match per day: <event ticker>_<YYYYMMDD>. The row's ticker is
+    a market ticker (EVENT-PLAYER), so drop the trailing player segment."""
+    event = str(ticker).rsplit("-", 1)[0] if ticker else "unknown"
+    return f"_{event}_{_LOG_DATE}"
+
+
 def _append(filename, cols, row):
     os.makedirs(cfg.LOG_DIR, exist_ok=True)
     base, ext = os.path.splitext(filename)
-    path = os.path.join(cfg.LOG_DIR, base + cfg.LOG_SUFFIX + ext)
+    path = os.path.join(cfg.LOG_DIR, base + _suffix(row.get("ticker")) + ext)
     write_header = not os.path.exists(path)
     with open(path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=cols)
@@ -100,12 +113,14 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
                  ms, pos_side, pos_value, p1_kstats=None, p2_kstats=None,
                  prematch_price=None, pa0=None, pb0=None, pa_blend=None, pb_blend=None,
                  report=None, vol_point=None, vol_game=None, best_of=None, cond=None,
-                 milestone_id=None):
+                 milestone_id=None, queue_ahead=None):
     """ms: MatchState for this match; pos_side/pos_value: 'p1'/'p2' and owned-market
     bid when a position is open, else None. p1_kstats/p2_kstats: Kalshi shot-level dicts.
     prematch/pa/pb: live market-prior inputs.
-    report: exact.match_report() dict (scorelines/set_win/over_games), or None."""
+    report: exact.match_report() dict (scorelines/set_win/over_games), or None.
+    queue_ahead: contracts resting ahead of our order, or None."""
     pos = ms.position
+    pend = ms.pending
     market = {"prematch_price": prematch_price, "pa0": pa0, "pb0": pb0,
               "pa_blend": pa_blend, "pb_blend": pb_blend}
     market = {k: ("" if v is None else v) for k, v in market.items()}
@@ -157,12 +172,17 @@ def log_snapshot(ticker, p1_name, p2_name, score_str, game_score_str, server,
         "position_side":              pos_side if pos else "",
         "position_entry_price":       pos["entry_price"] if pos else "",
         "position_count":             pos["count"] if pos else "",
-        "position_high_water":        pos["high_water"] if pos else "",
+        "position_game_id":           pos["game_id"] if pos else "",
+        "pending_kind":               pend["kind"] if pend else "",
+        "pending_price":              pend["price"] if pend else "",
+        "pending_count":              pend["count"] if pend else "",
+        "pending_filled":             pend["filled"] if pend else "",
+        "pending_age_secs":           round(time.time() - pend["placed_at"], 1) if pend else "",
+        "queue_ahead":                queue_ahead if queue_ahead is not None else "",
         "position_current_value":     pos_value if pos else "",
         "position_unrealized_pnl":    round(pos["count"] * (pos_value - pos["entry_price"]), 4) if pos else "",
         "budget_remaining":           ms.budget_remaining,
         "divergence_ema":             round(ms.divergence_ema, 4),
-        "standdown":                  int(ms.standdown),
         "p1_first_serve_pct":         p1_stats["first_in"],
         "p1_first_serve_num":         p1_stats["first_in_num"],
         "p1_first_serve_den":         p1_stats["first_in_den"],

@@ -11,18 +11,19 @@ import argparse, datetime, os, sys, time
 
 import trade.config as cfg
 from trade.kalshi_client import (get_best_ask_bid, place_order, close_position,
+                                  get_order, cancel_order, order_queue_position,
+                                  market_shard, funded_shards,
                                   fetch_milestone, fetch_milestone_id, fetch_best_of,
                                   get_event_competitor_map, parse_milestone_state,
                                   serve_stats_ready, fetch_prematch_price)
-from trade.exact         import (estimate_win_prob_market,
-                                  implied_point_probs, match_report)
+from trade.exact         import (estimate_win_prob_market, implied_point_probs,
+                                  match_report, _parse_match_state, _parse_game_score)
 from trade.state         import MatchStateStore
-from trade.decision      import (compute_entry, edge_threshold, should_stop_loss,
-                                  should_take_profit, should_trail_exit)
+from trade.decision      import compute_entry, on_serve
 from trade               import logger
 
 
-# State is keyed by event_ticker: one budget/position/cooldown per match,
+# State is keyed by event_ticker: one budget and one position per match,
 # even though each match has two tradeable markets (one per player).
 _store = MatchStateStore()
 
@@ -35,9 +36,48 @@ _match_cache = {}
 # when serve stats aren't ready yet (early in a match) by SIM_RETRY_SECS.
 _sim_attempts = {}
 
+# event_ticker → last known contracts resting ahead of our order (None if flat).
+# Logged on every snapshot: this is the measurement that decides whether maker
+# fills are achievable, and it is useless unless captured over time.
+_queue_ahead = {}
+
 # event_ticker → health, so a process self-terminates on sustained failure:
 # {"first_seen", "last_init", "not_live_since"}.
 _match_health = {}
+
+
+def _lock_path(event_ticker):
+    return os.path.join(cfg.LOG_DIR, f".bot_{event_ticker}.lock")
+
+
+def claim_match(event_ticker):
+    """Take the lock for this match, or return False if a bot already holds it.
+
+    The lock is a file this process touches every tick, so it stays valid from
+    the moment the bot starts — unlike the launcher's old spawn marker, which
+    expired while a bot was still waiting for serve stats and let a duplicate in.
+    """
+    path = _lock_path(event_ticker)
+    if (os.path.exists(path)
+            and time.time() - os.path.getmtime(path) < cfg.BOT_LOCK_STALE_SECS):
+        return False
+    os.makedirs(cfg.LOG_DIR, exist_ok=True)
+    open(path, "w").close()
+    return True
+
+
+def _heartbeat(event_ticker):
+    try:
+        os.utime(_lock_path(event_ticker), None)
+    except OSError:
+        pass
+
+
+def _release(event_ticker):
+    try:
+        os.remove(_lock_path(event_ticker))
+    except OSError:
+        pass
 
 
 def _stop_requested(event_ticker):
@@ -56,6 +96,42 @@ def _pos_player(cached, pos):
     return "p1" if pos["ticker"] == cached["p1_ticker"] else "p2"
 
 
+def _game_id(kalshi_state, best_of):
+    """Identity of the holding period a position belongs to.
+
+    Outside a tiebreak that is just score_str, which changes exactly when a game
+    ends. Inside one score_str stays "6-6" for every point, so the server is
+    folded in as well: serve rotates every two points and each rotation is a new
+    receiver to roll onto. Only tiebreaks fold it in — elsewhere the server is
+    constant within a game, and a lagging server field would churn the position.
+    """
+    score = kalshi_state["score_str"]
+    _, games = _parse_match_state(score, best_of)
+    if games == (6, 6):
+        return f"{score}|{'p1' if kalshi_state['p1_serves'] else 'p2'}"
+    return score
+
+
+def _serve_score(score_str, game_score_str, best_of):
+    """What on_serve() should judge: games in the current set, or POINTS once a
+    tiebreak starts. At 6-6 the games are level forever, so judging on games
+    would call every point of a tiebreak on-serve no matter how far down we are."""
+    _, games = _parse_match_state(score_str, best_of)
+    if games != (6, 6):
+        return games
+    if not cfg.TRADE_TIEBREAKS:
+        return None                  # stand aside for the whole tiebreak
+    try:
+        return _parse_game_score(game_score_str, is_tiebreak=True)
+    except (ValueError, KeyError, AttributeError):
+        return None
+
+
+def _in_tiebreak(score_str, best_of):
+    _, games = _parse_match_state(score_str, best_of)
+    return games == (6, 6)
+
+
 def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
                 server_name, p1_stats, p2_stats, mkt,
                 mc_prob, game_prob, set_prob,
@@ -69,13 +145,9 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
     def last(name):
         return name.split()[-1]
 
-    def edge_str(e, ask):
-        s = f"{e*100:+.1f}¢"
-        return s + "  EDGE" if e >= edge_threshold(ask) else s
-
-    def prob_row(label, name, g, s, m, ask, bid):
+    def prob_row(label, name, g, s, m, ask, bid, tag):
         return (f"  {label} {last(name):<12} {g*100:5.1f}%  {s*100:5.1f}%  {m*100:5.1f}%  |"
-                f"  {ask:.3f}   {bid:.3f}   {edge_str(m - ask, ask)}")
+                f"  {ask:.3f}   {bid:.3f}   {tag}")
 
     def stat_cells(s):
         def pc(x):
@@ -83,6 +155,22 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
         return (f"1st-in {pc(s['first_in'])}  1st-won {pc(s['win_first'])}  "
                 f"2nd-won {pc(s['win_second'])}  ret-1st {pc(s['return_first'])}  "
                 f"ret-2nd {pc(s['return_second'])}")
+
+    # Who the strategy wants: the receiver, but only while play is unbroken.
+    cur_games = _serve_score(score_str, game_score_str, best_of)
+    p1_serves = server_name == p1_name
+    tradeable = on_serve(cur_games, p1_serves)
+    p1_role = "serving" if p1_serves else "RECEIVER" + ("  BUY" if tradeable else "")
+    p2_role = "serving" if not p1_serves else "RECEIVER" + ("  BUY" if tradeable else "")
+    if not tradeable:
+        if cur_games:
+            srv_g, rcv_g = (cur_games if p1_serves else cur_games[::-1])
+            why = "server ahead" if srv_g > rcv_g else f"{abs(srv_g - rcv_g)}-game gap"
+        elif _in_tiebreak(score_str, best_of):
+            why = "tiebreak — disabled"
+        else:
+            why = "no set in progress"
+        p1_role = p2_role = f"off ({why})"
 
     pos_line = "  No position"
     if ms.position:
@@ -93,12 +181,10 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
         value   = pos["count"] * cur_val
         unreal  = pos["count"] * (cur_val - pos["entry_price"])
         pos_line = (f"  Position: {player.upper()} YES @ {pos['entry_price']:.3f} × {pos['count']}"
-                    f"  |  HWM {pos['high_water']:.3f}  |  now {cur_val:.3f}"
+                    f"  |  now {cur_val:.3f}  |  held since [{pos['game_id']}]"
                     f"  |  value ${value:.2f}  |  uP&L ${unreal:+.2f}  ({age}s)")
 
     budget_line = f"  Budget: ${ms.budget_remaining:.2f}"
-    if ms.cooldown_until and time.time() < ms.cooldown_until:
-        budget_line += f"  |  Cooldown: {int(ms.cooldown_until - time.time())}s left"
 
     branch_line = ""
     if cond is not None:
@@ -141,9 +227,9 @@ def _print_poll(cached, p1_name, p2_name, score_str, game_score_str,
         f"  [{ts}]  {evk}  [{mode}]  Best of {best_of}\n"
         f"  Score: {score_str}  |  Game: {game_score_str}  |  Serving: {last(server_name)}\n"
         f"\n"
-        f"     {'':<12}  game     set   match  |  YES ask   bid     edge\n"
-        f"{prob_row('P1', p1_name, game_prob, set_prob, mc_prob, p1_ask, p1_bid)}\n"
-        f"{prob_row('P2', p2_name, 1 - game_prob, 1 - set_prob, 1 - mc_prob, p2_ask, p2_bid)}\n"
+        f"     {'':<12}  game     set   match  |  YES ask   bid    role\n"
+        f"{prob_row('P1', p1_name, game_prob, set_prob, mc_prob, p1_ask, p1_bid, p1_role)}\n"
+        f"{prob_row('P2', p2_name, 1 - game_prob, 1 - set_prob, 1 - mc_prob, p2_ask, p2_bid, p2_role)}\n"
         f"\n"
         f"  P1 raw:  {stat_cells(p1_stats)}\n"
         f"  P2 raw:  {stat_cells(p2_stats)}\n"
@@ -183,6 +269,16 @@ def _init_event(event_ticker):
     p1_cid = next(cid for cid, info in event_map.items() if info["ticker"] == p1_ticker)
     p2_cid = next(cid for cid, info in event_map.items() if info["ticker"] == p2_ticker)
     best_of = fetch_best_of(milestone_id) or 3
+
+    # These series are split across exchange shards and the account only exists on
+    # some of them. Check once here rather than failing on every order.
+    if not cfg.DRY_RUN:
+        shard = market_shard(p1_ticker)
+        ok = funded_shards()
+        if shard is not None and ok and shard not in ok:
+            print(f"[init] FAILED: {event_ticker} trades on exchange shard {shard}; "
+                  f"this account only has a balance on {sorted(ok)}")
+            return None
     cached = {
         "p1_ticker":        p1_ticker,
         "p2_ticker":        p2_ticker,
@@ -220,13 +316,12 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     p1_name, p2_name = cached["p1_name_kalshi"], cached["p2_name_kalshi"]
     best_of = cached["best_of"]
     ms = _store.get_or_create(key)
-    total_points = p1_stats["first_in_den"] + p2_stats["first_in_den"]
 
     # Resolve the market-implied prior once per match (needs best_of).
     if cached["pa0"] is None:
         series = mc["event_ticker"].split("-")[0]
-        est_start = time.time() - total_points * 45 - 300
-        px = fetch_prematch_price(cached["p1_ticker"], series, est_start)
+        before = time.time() - cfg.PREMATCH_LOOKBACK_HOURS * 3600
+        px = fetch_prematch_price(cached["p1_ticker"], series, before)
         cached["prematch_price"] = px
         if px is not None and 0.02 < px < 0.98:
             cached["pa0"], cached["pb0"] = implied_point_probs(px, best_of)
@@ -260,15 +355,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     _store.update_mc_prob(key, mc_prob, game_prob, probs["cond"])
     _store.record_sim(key, score_key)
 
-    # Divergence stand-down: sustained large model-market disagreement means
-    # the market knows something we can't model — stop entering, keep exits live.
-    standdown, changed = _store.update_divergence(key, mc_prob, (p1_ask + p1_bid) / 2)
-    if changed:
-        ema = _store.get_or_create(key).divergence_ema
-        if standdown:
-            print(f"[standdown] {key}: divergence EMA {ema:.2f} > {cfg.DIVERGENCE_PAUSE} — entries paused")
-        else:
-            print(f"[standdown] {key}: divergence EMA {ema:.2f} < {cfg.DIVERGENCE_RESUME} — entries resumed")
+    _store.update_divergence(key, mc_prob, (p1_ask + p1_bid) / 2)
     cached["p1_name"] = p1_name
     cached["p2_name"] = p2_name
 
@@ -289,6 +376,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         pa_blend=probs["pa_blend"], pb_blend=probs["pb_blend"],
         report=report, vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
         best_of=best_of, cond=probs["cond"], milestone_id=cached["milestone_id"],
+        queue_ahead=_queue_ahead.get(key),
     )
 
     server_name = p1_name if kalshi_state["p1_serves"] else p2_name
@@ -305,127 +393,226 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     return True
 
 
-def _check_entry(key, cached, mc_prob, p1_ask, p2_ask):
-    """Evaluate buying YES on either player's market; place order if edge exists."""
+def _book_fill(key, cached, p, qty, cost, fee):
+    """Apply `qty` newly-filled contracts from pending order `p`."""
+    px = cost / qty if qty else p["price"]
+    if p["kind"] == "entry":
+        _store.deduct_fill(key, cost, fee)
+        _store.add_to_position(key, p["ticker"], px, qty, p["game_id"])
+        logger.log_trade(p["ticker"], cached["p1_name"] or "", cached["p2_name"] or "",
+                         p["player"], "entry", px, None, None, cost, fee, None,
+                         _store.get_or_create(key).budget_remaining)
+        print(f"*** FILL entry {p['ticker']} {qty:g} @ {px:.3f} fee ${fee:.3f} ***")
+    else:
+        pos = _store.get_or_create(key).position
+        entry_px = pos["entry_price"] if pos else p["price"]
+        proceeds = cost - fee
+        _store.restore_proceeds(key, proceeds)
+        _store.reduce_position(key, qty)
+        logger.log_trade(p["ticker"], "", "", p["player"], p["reason"], entry_px, px,
+                         None, 0.0, fee, proceeds - qty * entry_px,
+                         _store.get_or_create(key).budget_remaining)
+        print(f"*** FILL exit  {p['ticker']} {qty:g} @ {px:.3f} "
+              f"pnl ${proceeds - qty * entry_px:+.3f} ***")
+
+
+def _resolve_pending(key, cached, kalshi_state, px):
+    """Poll the resting order and book whatever has filled.
+
+    A maker order is NOT a position until it trades, so nothing is recorded until
+    the exchange says so.
+
+    Entries belong to one game: once it ends the order is cancelled and we keep
+    only what filled. Exits are different — their job is to get flat, so they keep
+    working across game boundaries and are only cancelled to re-quote when our
+    limit is no longer at the touch. px maps player -> the price we want to quote.
+    """
     ms = _store.get_or_create(key)
-    order_params = compute_entry(mc_prob, p1_ask, p2_ask, ms.budget_remaining,
-                                 size_cap=ms.initial_budget)
-    if order_params is None:
+    p = ms.pending
+    if p is None:
+        return
+    o = get_order(p["order_id"], p["ticker"])
+    if o is None:
+        return                                   # transient failure — retry next tick
+    _queue_ahead[key] = order_queue_position(p["order_id"], p["ticker"])
+
+    new_qty = o["filled"] - p["filled"]
+    if new_qty > 1e-9:
+        _book_fill(key, cached, p, new_qty,
+                   o["cost_dollars"] - p["cost"], o["fee_dollars"] - p["fee"])
+        p.update(filled=o["filled"], cost=o["cost_dollars"], fee=o["fee_dollars"])
+
+    if o["status"] in ("executed", "canceled"):
+        _store.clear_pending(key)
+        _queue_ahead.pop(key, None)
         return
 
-    player = order_params["player"]
-    ticker = cached["p1_ticker"] if player == "p1" else cached["p2_ticker"]
-
-    # Entry timing: don't buy a side that's probably about to lose the current
-    # game — wait for the game to resolve; the edge re-evaluates on the next sim.
-    if ms.last_game_prob is not None:
-        game_prob = ms.last_game_prob if player == "p1" else 1 - ms.last_game_prob
-        if game_prob < cfg.ENTRY_GAME_PROB_MIN:
-            print(f"[entry] deferred {ticker}: {player.upper()} game-win prob "
-                  f"{game_prob:.2f} < {cfg.ENTRY_GAME_PROB_MIN}")
+    # Still resting. Decide whether to pull it.
+    if p["kind"] == "entry":
+        # an entry belongs to one game; once that game is over the trade is moot
+        if _game_id(kalshi_state, cached["best_of"]) == p["game_id"]:
             return
-
-    # Fragility filter: skip "short-gamma" entries where a single lost game/set
-    # would crater our side (e.g. buying the server right before a possible break).
-    if ms.last_cond is not None and ms.last_mc_prob is not None:
-        c, m = ms.last_cond, ms.last_mc_prob
-        if player == "p1":
-            down_game, down_set = m - c["lose_game"], m - c["lose_set"]
-        else:
-            down_game, down_set = c["win_game"] - m, c["win_set"] - m
-        if down_game > cfg.MAX_ENTRY_GAME_DRAWDOWN or down_set > cfg.MAX_ENTRY_SET_DRAWDOWN:
-            print(f"[entry] blocked {ticker}: {player.upper()} too fragile — "
-                  f"lose-game drop {down_game:.2f} (max {cfg.MAX_ENTRY_GAME_DRAWDOWN}), "
-                  f"lose-set drop {down_set:.2f} (max {cfg.MAX_ENTRY_SET_DRAWDOWN})")
+        why = "game over"
+    else:
+        # an exit stays working until we are flat; only re-quote if our limit has
+        # drifted off the touch, otherwise we would churn away our queue position
+        want = px.get(p["player"])
+        if want is None or round(want * 100) == round(p["price"] * 100):
             return
+        why = f"re-quote {p['price']:.2f} -> {want:.2f}"
 
-    # Re-entry guard: after a trail exit, don't buy the same side back at or
-    # above the price we just sold at.
-    # Half-cent tolerance: prices on the same 1c tick must count as "not lower"
-    guard = ms.trail_exit
-    if (guard and guard["player"] == player
-            and time.time() - guard["time"] < cfg.REENTRY_GUARD_SECS
-            and order_params["entry_price"] >= guard["price"] - 0.005):
-        print(f"[entry] blocked {ticker}: trail exit was {guard['price']:.2f}, "
-              f"ask {order_params['entry_price']:.2f} not lower "
-              f"({int(cfg.REENTRY_GUARD_SECS - (time.time() - guard['time']))}s left)")
+    cancel_order(p["order_id"], p["ticker"])
+    final = get_order(p["order_id"], p["ticker"])             # catch a fill that raced the cancel
+    if final and final["filled"] - p["filled"] > 1e-9:
+        _book_fill(key, cached, p, final["filled"] - p["filled"],
+                   final["cost_dollars"] - p["cost"], final["fee_dollars"] - p["fee"])
+    unfilled = p["count"] - (final["filled"] if final else p["filled"])
+    print(f"[order] pulled {p['kind']} {p['ticker']} ({why}): "
+          f"{unfilled:g} of {p['count']:g} unfilled")
+    _store.clear_pending(key)
+    _queue_ahead.pop(key, None)
+
+
+def _register_order(key, fill, kind, ticker, player, count, price, game_id,
+                    reason=None):
+    """Record the unfilled remainder of an order so later ticks can chase it."""
+    if fill["remaining"] <= 1e-9:
+        return
+    _store.set_pending(key, {
+        "order_id": fill["order_id"], "kind": kind, "ticker": ticker,
+        "player": player, "count": count, "price": price, "game_id": game_id,
+        "reason": reason,
+        "filled": fill["filled"], "cost": fill["cost_dollars"], "fee": fill["fee_dollars"],
+        "placed_at": time.time(),
+    })
+    q = order_queue_position(fill["order_id"], ticker)
+    _queue_ahead[key] = q
+    print(f"[order] {kind} resting {ticker} {fill['remaining']:g} @ {price:.2f}"
+          + (f"  queue ahead: {q:g}" if q is not None else ""))
+
+
+def _check_entry(key, cached, kalshi_state, p1_px, p2_px):
+    """Buy whoever is about to RECEIVE, at a fixed size.
+    p1_px/p2_px are the bids in MAKER_MODE (we rest) and the asks otherwise."""
+    ms = _store.get_or_create(key)
+
+    # The receiver of the game about to be played is whoever is not serving it.
+    # In a tiebreak p1_serves is the next point's server; we hold that side's
+    # opponent for the whole tiebreak, since the score_str game id only changes
+    # when the set ends.
+    receiver = "p2" if kalshi_state["p1_serves"] else "p1"
+    ticker   = cached["p1_ticker"] if receiver == "p1" else cached["p2_ticker"]
+    ask      = p1_px if receiver == "p1" else p2_px
+
+    # Only trade games that are worth trading. The branch spread is the same
+    # magnitude for either player (p2's branches are p1's complements, swapped),
+    # so this is a property of the game, not of the side we are buying.
+    c = ms.last_cond
+    if c is None:
+        return
+    swing = abs(c["win_game"] - c["lose_game"])
+    if swing < cfg.MIN_GAME_SWING:
+        print(f"[entry] skipped {ticker}: this game swings only {swing*100:.0f}pp "
+              f"(need {cfg.MIN_GAME_SWING*100:.0f}pp) — too small to clear the fee")
+        return
+
+    # Logged for analysis only — nothing about the trade depends on the model.
+    gp = ms.last_game_prob
+    break_prob = None if gp is None else (gp if receiver == "p1" else 1 - gp)
+
+    order_params = compute_entry(ask, ms.budget_remaining, ticker)
+    if order_params is None:
+        print(f"[entry] skipped {ticker}: {cfg.CONTRACTS_PER_TRADE} @ {ask:.2f} "
+              f"needs more than the ${ms.budget_remaining:.2f} left")
         return
 
     fill = place_order(ticker, order_params["count"], order_params["price_cents"])
     if fill is None:
         return
 
-    _store.deduct_fill(key, fill["cost_dollars"], fill["fee_dollars"])
-    _store.set_position(key, ticker, order_params["entry_price"], order_params["count"])
+    gid = _game_id(kalshi_state, cached["best_of"])
 
-    logger.log_trade(
-        ticker, cached["p1_name"] or "", cached["p2_name"] or "",
-        player, "entry",
-        order_params["entry_price"], None,
-        mc_prob, fill["cost_dollars"], fill["fee_dollars"], None,
-        _store.get_or_create(key).budget_remaining,
-    )
+    # Only what actually traded becomes a position; the rest rests on the book.
+    if fill["filled"] > 1e-9:
+        _store.deduct_fill(key, fill["cost_dollars"], fill["fee_dollars"])
+        _store.add_to_position(key, ticker, fill["avg_price"] or order_params["entry_price"],
+                               fill["filled"], gid)
+        logger.log_trade(
+            ticker, cached["p1_name"] or "", cached["p2_name"] or "",
+            receiver, "entry",
+            fill["avg_price"] or order_params["entry_price"], None,
+            ms.last_mc_prob, fill["cost_dollars"], fill["fee_dollars"], None,
+            _store.get_or_create(key).budget_remaining,
+        )
+    _register_order(key, fill, "entry", ticker, receiver, order_params["count"],
+                    order_params["entry_price"], gid)
+    if fill["filled"] <= 1e-9:
+        return
+
+    bp = "n/a" if break_prob is None else f"{break_prob*100:.1f}%"
     print(f"\n*** ENTRY [{cfg.DRY_RUN and 'DRY' or 'LIVE'}]  {ticker}"
-          f"  player={player.upper()}"
+          f"  receiver={receiver.upper()}"
           f"  price={order_params['entry_price']:.3f}"
-          f"  count={order_params['count']}"
-          f"  mc={mc_prob*100:.1f}%"
+          f"  count={fill['filled']:g}"
+          f"  break={bp}"
+          f"  swing={swing*100:.0f}pp"
           f"  cost=${fill['cost_dollars']:.2f}"
+          f"  fee=${fill['fee_dollars']:.3f}"
           f"  budget_left=${_store.get_or_create(key).budget_remaining:.2f} ***")
 
 
-def _check_exit(key, cached, p1_bid, p2_bid):
-    """Check the open YES position for stop loss / profit target at its market's bid."""
-    ms     = _store.get_or_create(key)
-    pos    = ms.position
+def _check_exit(key, cached, kalshi_state, p1_px, p2_px):
+    """Square off as soon as the game we entered on has finished — or, in a
+    tiebreak, as soon as serve rotates or we bank a mini-break. No other exit.
+    p1_px/p2_px are the asks in MAKER_MODE (we rest) and the bids otherwise."""
+    ms  = _store.get_or_create(key)
+    pos = ms.position
     player = _pos_player(cached, pos)
+    now_id = _game_id(kalshi_state, cached["best_of"])
 
-    current_value     = p1_bid if player == "p1" else p2_bid
+    if now_id != pos["game_id"]:
+        # the score moved on: a game ended, a set ended, or serve rotated in a tiebreak
+        reason = ("serve_rotation"
+                  if kalshi_state["score_str"] == pos["game_id"].split("|")[0]
+                  else "game_end")
+    else:
+        return                                   # same game / service block — hold
+
+    current_value     = p1_px if player == "p1" else p2_px
     close_price_cents = round(current_value * 100)
 
-    pos["high_water"] = max(pos["high_water"], current_value)
-
-    exit_reason = None
-    current_mc_prob = ms.last_mc_prob
-    if current_mc_prob is not None:
-        if should_take_profit(player, current_value, current_mc_prob, pos["entry_price"]):
-            exit_reason = "profit_target"
-        elif should_trail_exit(pos["entry_price"], pos["high_water"], current_value):
-            exit_reason = "trail_lock"
-        elif should_stop_loss(pos["entry_price"], current_value):
-            exit_reason = "stop_loss"
-
-    if exit_reason is None:
-        return
-
-    fill = close_position(pos["ticker"], pos["count"], close_price_cents)
+    entry_px, qty, gid = pos["entry_price"], pos["count"], pos["game_id"]
+    fill = close_position(pos["ticker"], qty, close_price_cents)
+    if fill is None:
+        return                                   # could not place; retry next tick
 
     pnl = None
-    if fill is not None:
-        proceeds = pos["count"] * current_value - fill["fee_dollars"]
-        pnl = proceeds - pos["count"] * pos["entry_price"]
+    if fill["filled"] > 1e-9:
+        sold = fill["filled"]
+        proceeds = fill["cost_dollars"] - fill["fee_dollars"]
+        pnl = proceeds - sold * entry_px
         _store.restore_proceeds(key, proceeds)
+        _store.reduce_position(key, sold)
+        logger.log_trade(
+            pos["ticker"], "", "",
+            player, reason,
+            entry_px, fill["avg_price"] or current_value,
+            ms.last_mc_prob, 0.0,
+            fill["fee_dollars"], pnl,
+            _store.get_or_create(key).budget_remaining,
+        )
+    # whatever did not sell stays ours and keeps chasing the ask
+    _register_order(key, fill, "exit", pos["ticker"], player, qty,
+                    current_value, gid, reason=reason)
+    if fill["filled"] <= 1e-9:
+        return
 
-    _store.clear_position(key)
-    if exit_reason == "stop_loss":
-        _store.set_cooldown(key)
-    elif exit_reason == "trail_lock":
-        _store.set_trail_exit(key, player, current_value)
-
-    logger.log_trade(
-        pos["ticker"], "", "",
-        player, exit_reason,
-        pos["entry_price"], current_value,
-        current_mc_prob, 0.0,
-        fill["fee_dollars"] if fill else 0.0, pnl,
-        _store.get_or_create(key).budget_remaining,
-    )
     pnl_str = f"${pnl:+.3f}" if pnl is not None else "n/a"
-    print(f"\n*** {exit_reason.upper()} [{cfg.DRY_RUN and 'DRY' or 'LIVE'}]  {pos['ticker']}"
+    print(f"\n*** {reason.upper()} [{cfg.DRY_RUN and 'DRY' or 'LIVE'}]  {pos['ticker']}"
           f"  player={player.upper()}"
           f"  entry={pos['entry_price']:.3f}"
           f"  exit={current_value:.3f}"
-          f"  mc_now={current_mc_prob*100:.1f}%"
+          f"  {pos['game_id']} -> {now_id}"
           f"  pnl={pnl_str}"
           f"  budget_left=${_store.get_or_create(key).budget_remaining:.2f} ***")
 
@@ -500,21 +687,38 @@ def _tick(mc):
             _sim_attempts[key] = {"score_key": score_key, "ts": time.time()}
             sim_fresh = result is True
 
-    # Exits run every tick (they protect an existing position); entries only on
-    # ticks with a freshly computed mc_prob — a cached prob can be stale relative
-    # to the market, which knows the score before our feed does.
-    if _store.has_position(key):
-        _check_exit(key, cached, p1_bid, p2_bid)
-    elif (sim_fresh
-          and not ms.standdown
-          and not _store.is_in_cooldown(key)
-          and not _store.is_budget_exhausted(key)):
+    # Which side of the book we trade on. MAKER rests: we buy at the bid and sell
+    # at the ask. TAKER crosses: buy the ask, sell the bid.
+    entry_px = (p1_bid, p2_bid) if cfg.MAKER_MODE else (p1_ask, p2_ask)
+    exit_px  = (p1_ask, p2_ask) if cfg.MAKER_MODE else (p1_bid, p2_bid)
+
+    # Resolve any resting order first: book what filled, cancel what is stale.
+    # Until this runs, a maker order is not a position.
+    _resolve_pending(key, cached, kalshi_state,
+                     {"p1": exit_px[0], "p2": exit_px[1]})
+
+    # Square off next: the position is closed the moment its game ends, which
+    # frees the budget to roll straight onto the new receiver in the same tick.
+    # Skipped while an exit is already working, or we would double-sell.
+    if _store.has_position(key) and not _store.has_pending(key):
+        _check_exit(key, cached, kalshi_state, *exit_px)
+
+    # Then take the new game's position. Entries need a freshly computed
+    # game prob — a cached one belongs to the game that just finished.
+    serve_score = _serve_score(kalshi_state["score_str"], kalshi_state["game_score_str"],
+                               cached["best_of"])
+    if (not _store.has_position(key)
+            and not _store.has_pending(key)
+            and sim_fresh
+            and on_serve(serve_score, kalshi_state["p1_serves"])
+            and not _store.is_budget_exhausted(key)):
         # Re-fetch prices: the sim takes a moment and the market may have moved
         # since the tick started.
-        p1_ask, _ = get_best_ask_bid(cached["p1_ticker"])
-        p2_ask, _ = get_best_ask_bid(cached["p2_ticker"])
-        if p1_ask is not None and p2_ask is not None:
-            _check_entry(key, cached, ms.last_mc_prob, p1_ask, p2_ask)
+        a1, b1 = get_best_ask_bid(cached["p1_ticker"])
+        a2, b2 = get_best_ask_bid(cached["p2_ticker"])
+        px1, px2 = (b1, b2) if cfg.MAKER_MODE else (a1, a2)
+        if px1 is not None and px2 is not None:
+            _check_entry(key, cached, kalshi_state, px1, px2)
 
 
 def main():
@@ -539,20 +743,38 @@ def main():
         print("No matches configured. Pass an event ticker or add entries to MATCH_CONFIG.")
         return
 
+    # One bot per match, enforced here rather than by the launcher: two processes
+    # on the same match each keep their own budget and position, so they double
+    # the exposure and interleave into one log.
+    claimed = [mc for mc in matches if claim_match(mc["event_ticker"])]
+    for mc in matches:
+        if mc not in claimed:
+            print(f"[skip] {mc['event_ticker']}: another bot already holds this match")
+    matches = claimed
+    if not matches:
+        print("[exit] every requested match is already being traded")
+        return
+
     mode = "DRY RUN" if cfg.DRY_RUN else "LIVE"
     print(f"Starting trade bot [{mode}] — {len(matches)} match(es)")
 
-    while True:
-        for mc in list(matches):
-            if _stop_requested(mc["event_ticker"]):
-                print(f"[stop] {mc['event_ticker']}: stop requested from monitor — exiting")
+    try:
+        while True:
+            for mc in list(matches):
+                _heartbeat(mc["event_ticker"])
+                if _stop_requested(mc["event_ticker"]):
+                    print(f"[stop] {mc['event_ticker']}: stop requested from monitor — exiting")
+                    return
+                if _tick(mc) == "dead":
+                    _release(mc["event_ticker"])
+                    matches.remove(mc)
+            if not matches:
+                print("[exit] no active matches remaining — shutting down")
                 return
-            if _tick(mc) == "dead":
-                matches.remove(mc)
-        if not matches:
-            print("[exit] no active matches remaining — shutting down")
-            return
-        time.sleep(cfg.FAST_POLL_SECS)
+            time.sleep(cfg.FAST_POLL_SECS)
+    finally:
+        for mc in matches:
+            _release(mc["event_ticker"])
 
 
 if __name__ == "__main__":

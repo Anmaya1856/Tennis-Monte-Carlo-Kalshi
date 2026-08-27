@@ -27,33 +27,34 @@ def test_returns_none_on_empty_book():
     assert ask is None and bid is None
 
 def test_dry_run_place_order_returns_mock():
-    original = cfg.DRY_RUN
-    cfg.DRY_RUN = True
+    original, maker = cfg.DRY_RUN, cfg.MAKER_MODE
+    cfg.DRY_RUN, cfg.MAKER_MODE = True, False      # taker: crossing pays the fee
     try:
         from trade.kalshi_client import place_order
         result = place_order("FAKE-TICKER", count=5, price_cents=55)
         assert result is not None
-        # Kalshi taker fee: roundup(0.07 * 5 * 0.55 * 0.45) to a centicent = 0.0867
-        assert result["fee_dollars"] == pytest.approx(0.0867)
+        # Kalshi taker fee: roundup(0.07 * 5 * 0.55 * 0.45) = 0.086625 -> next cent
+        assert result["fee_dollars"] == pytest.approx(0.09)
         assert abs(result["cost_dollars"] - 5 * 0.55) < 1e-9
     finally:
-        cfg.DRY_RUN = original
+        cfg.DRY_RUN, cfg.MAKER_MODE = original, maker
 
 def test_taker_fee_formula():
     from trade.kalshi_client import taker_fee
-    assert taker_fee(1, 0.50) == pytest.approx(0.0175)   # max fee point
-    assert taker_fee(1, 0.95) == pytest.approx(0.0034)   # 0.003325 rounded up
+    # fees round UP to the next cent, per Kalshi's published table
+    assert taker_fee(1, 0.50) == pytest.approx(0.02)     # 0.0175 -> next cent
+    assert taker_fee(1, 0.95) == pytest.approx(0.01)     # 0.003325 -> next cent
     assert taker_fee(0, 0.50) == 0.0
 
 def test_dry_run_close_pays_fee():
-    original = cfg.DRY_RUN
-    cfg.DRY_RUN = True
+    original, maker = cfg.DRY_RUN, cfg.MAKER_MODE
+    cfg.DRY_RUN, cfg.MAKER_MODE = True, False      # taker: crossing pays the fee
     try:
         from trade.kalshi_client import close_position
         result = close_position("FAKE-TICKER", count=3, price_cents=40)
-        assert result["fee_dollars"] == pytest.approx(0.0504)  # 0.07*3*0.4*0.6 = 0.0504 exactly
+        assert result["fee_dollars"] == pytest.approx(0.06)  # 0.07*3*0.4*0.6 = 0.0504 -> next cent
     finally:
-        cfg.DRY_RUN = original
+        cfg.DRY_RUN, cfg.MAKER_MODE = original, maker
 
 
 # ── Milestone ID lookup tests ────────────────────────────────────────────────

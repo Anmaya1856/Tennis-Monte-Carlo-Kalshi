@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 from dash import Dash, dcc, html, ctx, Input, Output, State, ALL
 
 import trade.config as cfg
-from trade.decision import edge_threshold
+from trade.decision import on_serve
 from trade.kalshi_client import discover_live_events
 from trade.exact import (win_probs, win_prob_forward, weighted_quantile,
                          _parse_match_state, _parse_game_score, _parse_score, _is_set_complete)
@@ -73,17 +73,19 @@ def active_matches():
     return {t: g for t, (ts, g) in sorted(best.items())}
 
 
-def recent_trades(limit=15):
-    files = glob.glob(os.path.join(LOG_DIR, "trade_log_*.csv"))
+def match_trades(event_ticker):
+    """Every trade logged for one match, newest first. Logs are named
+    trade_log_<event ticker>_<date>.csv, so this is a direct file lookup."""
+    files = glob.glob(os.path.join(LOG_DIR, f"trade_log_{event_ticker}_*.csv"))
     frames = []
-    for f in sorted(files, key=os.path.getmtime)[-5:]:
+    for f in sorted(files, key=os.path.getmtime):
         try:
             frames.append(pd.read_csv(f))
         except Exception:
             pass
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True).tail(limit).iloc[::-1]
+    return pd.concat(frames, ignore_index=True).iloc[::-1]
 
 
 def branch_probs(last):
@@ -194,9 +196,8 @@ def service_stats(last):
                      html.Div([_svc_row(*r) for r in rows], className="svc-stats")])
 
 
-def player_col(nm, color, match, bid, ask, game, sett, br_game, br_set):
-    tradeable = match is not None and ask is not None and (match - ask) >= edge_threshold(ask)
-    badge = html.Span("EDGE", className="badge") if tradeable else None
+def player_col(nm, color, match, bid, ask, game, sett, br_game, br_set, badge_text=None):
+    badge = html.Span(badge_text, className="badge") if badge_text else None
     def gsm(label, val, align):
         return html.Div([html.Div(label, className="gsm-label"),
                          html.Div(_pct(val, 1), className="gsm-val")],
@@ -332,33 +333,76 @@ def fan_fig(g, p1, fwd):
     return fig
 
 
-def dist_fig(fwd, p1, p2):
-    """Histogram of p1's match win% at the far end of the forecast — many states
-    are reachable there, so it shows the distribution shape (spread / skew /
-    bimodality) that the cone's percentile bands can't."""
-    fig = go.Figure()
-    khoriz = (len(fwd["levels"]) - 1) if fwd and fwd["levels"] else 0
-    pairs = fwd["levels"][-1] if fwd and fwd["levels"] else []
-    if pairs:
-        nbins = 13
-        binp = [0.0] * nbins
-        for v, p in pairs:
-            binp[min(int(v * nbins), nbins - 1)] += p
-        centers = [(i + 0.5) * 100 / nbins for i in range(nbins)]
-        colors = [P1C if c >= 50 else P2C for c in centers]
-        fig.add_bar(x=centers, y=[b * 100 for b in binp], marker_color=colors,
-                    width=100 / nbins * 0.88, marker_line_width=0,
-                    hovertemplate="%{x:.0f}% win: %{y:.1f}% chance<extra></extra>")
-    fig.update_layout(
-        paper_bgcolor=SURFACE, plot_bgcolor=SURFACE, height=340,
-        margin=dict(l=40, r=14, t=46, b=30), bargap=0.06,
-        font=dict(color=INK2, size=14, family='system-ui,-apple-system,"Segoe UI",sans-serif'),
-        title=dict(text=f"<b>{p1} win% in {khoriz} games</b>", font=dict(size=18, color=INK),
-                   x=0, y=0.97, yanchor="top"),
-        xaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BASE, range=[0, 100],
-                   ticksuffix="%", title=dict(text=f"← {p2}    {p1} →", font=dict(size=13))),
-        yaxis=dict(gridcolor=GRID, zeroline=False, linecolor=BASE, ticksuffix="%"))
-    return fig
+def serve_probs(last, p1, p2):
+    """Per-server point-win probability in the three forms the engine uses:
+
+      PRE-MATCH  pa0/pb0, inverted from the market's opening price
+      IN-PLAY    the empirical rate from this match's service points
+      BLENDED    what actually feeds the DP — the prior worth MARKET_PRIOR_N
+                 pseudo points plus the real ones, so it tapers from one to the other
+
+    Rendered with the same mirrored rows as SERVICE STATS below it, since it is
+    the same shape of comparison.
+    """
+    pre = {"p1": _num(last, "pa0"), "p2": _num(last, "pb0")}
+    bl = {"p1": _num(last, "pa_blend"), "p2": _num(last, "pb_blend")}
+    if pre["p1"] is None and bl["p1"] is None:
+        return html.Div()
+
+    live, played = {}, {}
+    for pl in ("p1", "p2"):
+        won = (_num(last, f"{pl}_first_serve_won_num") or 0) +               (_num(last, f"{pl}_second_serve_won_num") or 0)
+        n = _num(last, f"{pl}_first_serve_den") or 0
+        played[pl] = n
+        live[pl] = (won / n) if n else None
+
+    n_prior = getattr(cfg, "MARKET_PRIOR_N", 40)
+    w1 = n_prior / (n_prior + played["p1"]) if (n_prior + played["p1"]) else 1.0
+
+    # How the pre-match row was built. implied_point_probs returns (base+d, base-d):
+    # the base fixes the overall serve level (the price alone is one equation short
+    # of two unknowns) and d is the skill gap the price implies. Both are recoverable.
+    mkt = _num(last, "prematch_price")
+    base = (pre["p1"] + pre["p2"]) / 2 if None not in pre.values() else None
+    gap = abs(pre["p1"] - pre["p2"]) / 2 if None not in pre.values() else None
+
+    def tile(label, value, sub, color=None):
+        return html.Div([html.Div(label, className="bk-label"),
+                         html.Div(value, className="bk-val",
+                                  style={"color": color} if color else None),
+                         html.Div(sub, className="bk-sub")], className="bk-tile")
+
+    if base is None:
+        deriv = None
+    elif mkt is None:
+        deriv = html.Div([
+            tile("KALSHI OPEN", "—", "no price found", WARN),
+            tile("BASE", f"{base * 100:.1f}%", "neutral fallback", WARN),
+            tile("SKILL GAP", "±0.0%", "prior is uninformative", WARN),
+        ], className="sp-deriv")
+    else:
+        deriv = html.Div([
+            tile("KALSHI OPEN", _price(mkt), f"{_last_name(p1)}, pre-match"),
+            tile("BASE", f"{base * 100:.1f}%", "assumed tour average"),
+            tile("SKILL GAP", f"±{gap * 100:.1f}%", "what the price implies"),
+        ], className="sp-deriv")
+
+    def cells(d, sub=None):
+        def one(pl):
+            if d[pl] is None:
+                return "—", 0.0
+            txt = _pct(d[pl], 1) + (f"  ({played[pl]:g} pts)" if sub else "")
+            return txt, d[pl]
+        a, fa = one("p1")
+        b, fb = one("p2")
+        return a, fa, b, fb
+
+    rows = [_svc_row("PRE-MATCH", *cells(pre)),
+            _svc_row("IN-MATCH SERVE", *cells(live, sub=True)),
+            _svc_row(f"BLENDED — USED  ({w1 * 100:.0f}% prior)", *cells(bl))]
+    return html.Div([html.Div("SERVE POINT PROBABILITY", className="section-label"),
+                     *([deriv] if deriv is not None else []),
+                     html.Div(rows, className="svc-stats sp-stats")])
 
 
 def scoreboard(p1full, p2full, last):
@@ -430,19 +474,26 @@ def build_card(ticker, g):
 
     score = scoreboard(p1full, p2full, last)
 
+    # The strategy buys the receiver while the set is unbroken.
+    _, cur_games = _parse_match_state(str(last.get("score_str") or "0-0"), best_of)
+    srv = last.get("server")
+    live = on_serve(cur_games, srv == "p1")
+    p1_badge = "RECEIVER" if (srv == "p2" and live) else None
+    p2_badge = "RECEIVER" if (srv == "p1" and live) else None
+
     cols = html.Div([
-        player_col(p1, P1C, mc, p1b, p1a, gm, st, p1_bg, p1_bs),
+        player_col(p1, P1C, mc, p1b, p1a, gm, st, p1_bg, p1_bs, p1_badge),
         player_col(p2, P2C, None if mc is None else 1 - mc, p2b, p2a,
                    None if gm is None else 1 - gm, None if st is None else 1 - st,
-                   p2_bg, p2_bs),
+                   p2_bg, p2_bs, p2_badge),
     ], className="pcol-grid")
 
     # footer — what we hold, what it's worth, and what we can still spend
     side = last.get("position_side")
     budget = _num(last, "budget_remaining")
-    standdown = str(last.get("standdown")) in ("1", "1.0", "True")
     ep, cnt = _num(last, "position_entry_price"), _num(last, "position_count")
-    cur, hwm = _num(last, "position_current_value"), _num(last, "position_high_water")
+    cur = _num(last, "position_current_value")
+    game_id = last.get("position_game_id")
     upnl, dv = _num(last, "position_unrealized_pnl"), _num(last, "divergence_ema")
 
     def ft_tile(label, value, sub, color=None, small=False):
@@ -462,7 +513,7 @@ def build_card(ticker, g):
                     f"×{cnt:g} contracts" if cnt is not None else "", small=True),
             ft_tile("ENTRY", _price(ep), "we paid"),
             ft_tile("WORTH NOW", _price(cur),
-                    f"peaked at {_price(hwm)}" if hwm is not None else "at market bid"),
+                    f"opened at [{game_id}]" if game_id else "at market bid"),
             ft_tile("UNREALIZED", f"${upnl:+.2f}", "if we sold now",
                     GOOD if upnl >= 0 else CRIT),
         ]
@@ -470,9 +521,11 @@ def build_card(ticker, g):
         tiles = [ft_tile("HOLDING", "FLAT", "nothing open", MUTED, small=True)]
     tiles.append(ft_tile("BUDGET LEFT", f"${budget:.2f}" if budget is not None else "—",
                          "free to spend"))
-    tiles.append(ft_tile("ENTRIES", "PAUSED" if standdown else "ACTIVE",
-                         f"model−market {dv:.2f}" if dv is not None else "stand-down status",
-                         WARN if standdown else GOOD))
+    tiles.append(ft_tile("STRATEGY", "ON" if live else "STANDING BY",
+                         "buying the receiver" if live
+                         else "set is broken — waiting", GOOD if live else MUTED))
+    tiles.append(ft_tile("MODEL−MARKET", f"{dv:.2f}" if dv is not None else "—",
+                         "divergence, diagnostic only"))
 
     footer = html.Div([
         html.Div("OUR POSITION  ·  RISK", className="grp-label"),
@@ -480,37 +533,83 @@ def build_card(ticker, g):
     ], className="card-foot")
 
     fwd = compute_forward(last)
-    charts = html.Div([
-        dcc.Graph(figure=fan_fig(g, p1, fwd), config={"displayModeBar": False}, className="chart"),
-        dcc.Graph(figure=dist_fig(fwd, p1, p2), config={"displayModeBar": False}, className="chart"),
-    ], className="chart-grid2")
+    charts = dcc.Graph(figure=fan_fig(g, p1, fwd),
+                       config={"displayModeBar": False}, className="chart")
 
-    return html.Div([header, ids, score, cols, service_stats(last),
+    return html.Div([header, ids, score, cols,
+                     serve_probs(last, p1, p2), service_stats(last),
                      scoreline_readout(last, best_of, p1, p2),
-                     over_under_readout(last), charts, footer], className="card")
+                     over_under_readout(last), charts, footer,
+                     build_tradelog(event, p1, p2)], className="card")
 
 
-def build_tradelog(df):
+def build_tradelog(event_ticker, p1, p2):
+    """This match's trades, paired into round trips, newest first."""
+    df = match_trades(event_ticker)
     if df.empty:
-        return html.Div("No trades yet.", className="empty")
-    cols = [("timestamp", "time"), ("ticker", "market"), ("direction", "action"),
-            ("entry_price", "entry"), ("exit_price", "exit"), ("pnl", "P&L")]
-    head = html.Tr([html.Th(h) for _, h in cols])
+        return html.Div([html.Div("TRADES  ·  THIS MATCH", className="grp-label"),
+                         html.Div("No trades yet.", className="empty")])
+
+    trips, pending = [], None
+    for _, r in df.iloc[::-1].iterrows():          # back to chronological to pair
+        if r.get("event") == "entry":
+            pending = r
+        elif pending is not None:
+            trips.append((pending, r))
+            pending = None
+    if pending is not None:
+        trips.append((pending, None))              # still open
+
+    def _fee(r):
+        return float(r["fee"]) if r is not None and pd.notna(r.get("fee")) else 0.0
+
+    def _net(en, ex):
+        """Round-trip P&L after BOTH legs' fees.
+
+        The logged `pnl` is proceeds minus cost basis net of the EXIT fee only —
+        the entry fee is taken out of budget separately at fill time, so it never
+        reaches that column. Subtract it here or every trade reads better than it was.
+        """
+        if ex is None or pd.isna(ex.get("pnl")):
+            return None
+        return float(ex["pnl"]) - _fee(en)
+
+    realized = sum(v for v in (_net(en, ex) for en, ex in trips) if v is not None)
+    fees = sum(_fee(en) + _fee(ex) for en, ex in trips)
+
+    head = html.Tr([html.Th(h) for h in
+                    ("opened", "side", "entry", "exit", "fees", "P&L")])
     rows = []
-    for _, r in df.iterrows():
-        try:
-            pnl_f = float(r.get("pnl"))
-        except (TypeError, ValueError):
-            pnl_f = None
-        cells = []
-        for c, _h in cols:
-            val, style = r.get(c), {}
-            if c == "pnl" and pnl_f is not None:
-                val = f"${pnl_f:+.2f}"
-                style = {"color": GOOD if pnl_f >= 0 else CRIT, "fontWeight": 700}
-            cells.append(html.Td("" if pd.isna(val) else str(val), style=style))
+    for en, ex in reversed(trips):
+        who = p1 if en.get("direction") == "p1" else p2
+        t = str(en.get("timestamp") or "")[11:16]
+        fee = _fee(en) + _fee(ex)
+        if ex is None:
+            cells = [html.Td(t), html.Td(who), html.Td(_price(_num(en, "entry_price"))),
+                     html.Td("open", style={"color": WARN}), html.Td(f"${fee:.3f}"),
+                     html.Td("—", style={"color": MUTED})]
+        else:
+            net = _net(en, ex)
+            cells = [html.Td(t), html.Td(who), html.Td(_price(_num(en, "entry_price"))),
+                     html.Td(_price(_num(ex, "exit_price"))), html.Td(f"${fee:.3f}"),
+                     html.Td(f"${net:+.3f}" if net is not None else "—",
+                             style={"color": GOOD if (net or 0) >= 0 else CRIT,
+                                    "fontWeight": 700})]
         rows.append(html.Tr(cells))
-    return html.Table([html.Thead(head), html.Tbody(rows)], className="tradelog")
+
+    summary = html.Div([
+        html.Span(f"{len(trips)} trades", className="tl-stat"),
+        html.Span(f"fees ${fees:.2f}", className="tl-stat"),
+        html.Span(f"realized ${realized:+.2f}", className="tl-stat",
+                  style={"color": GOOD if realized >= 0 else CRIT, "fontWeight": 700}),
+    ], className="tl-summary")
+
+    return html.Div([
+        html.Div("TRADES  ·  THIS MATCH", className="grp-label"),
+        summary,
+        html.Div(html.Table([html.Thead(head), html.Tbody(rows)], className="tradelog"),
+                 className="tl-wrap"),
+    ])
 
 
 # ── app ───────────────────────────────────────────────────────────────────────
@@ -631,7 +730,6 @@ app.index_string = """<!DOCTYPE html><html><head>{%metas%}<title>{%title%}</titl
                                                        font-weight:600; }
   .ou-table tbody td { font-weight:650; }
   .chart { margin-top:10px; }
-  .chart-grid2 { display:grid; grid-template-columns:3fr 2fr; gap:14px; margin-top:10px; }
 
   .card-foot { margin-top:14px; padding-top:4px; border-top:1px solid """ + HAIR + """;
                font-variant-numeric:tabular-nums; }
@@ -644,6 +742,15 @@ app.index_string = """<!DOCTYPE html><html><head>{%metas%}<title>{%title%}</titl
   .ft-val-sm { font-size:20px; }
   .ft-sub { font-size:13px; color:""" + MUTED + """; }
 
+  .sp-stats .sb2-row:last-child .sb2-val { color:""" + INK + """; font-weight:750; }
+  .sp-deriv { display:grid; grid-template-columns:repeat(3, 1fr); gap:11px; margin-bottom:12px; }
+
+  .tl-summary { display:flex; gap:20px; margin-bottom:8px; font-size:16px;
+                font-variant-numeric:tabular-nums; }
+  .tl-stat { color:""" + INK2 + """; }
+  .tl-wrap { max-height:260px; overflow-y:auto; overflow-x:auto;
+             border:1px solid """ + HAIR + """; border-radius:9px; }
+  .tl-wrap .tradelog th { position:sticky; top:0; background:""" + INSET + """; }
   .tradelog { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
   .tradelog th { text-align:left; color:""" + MUTED + """; font-weight:600; font-size:16px;
                  padding:7px 14px; border-bottom:1px solid """ + HAIR + """; letter-spacing:.03em; }
@@ -663,13 +770,11 @@ app.layout = html.Div(className="wrap", children=[
         html.Span(id="add-status", className="add-status"),
     ], className="addbar"),
     html.Div(id="matches"),
-    html.H3("TRADE LOG"),
-    html.Div(id="tradelog"),
 ])
 
 
 @app.callback(Output("matches", "children"), Output("status", "children"),
-              Output("tradelog", "children"), Input("tick", "n_intervals"))
+              Input("tick", "n_intervals"))
 def refresh(_):
     matches = active_matches()
     now = datetime.datetime.now().strftime("%H:%M:%S")
@@ -682,7 +787,7 @@ def refresh(_):
     mode = "DRY RUN" if cfg.DRY_RUN else "LIVE"
     status = html.Span([html.Span(mode, className="mode"),
                         f"{len(matches)} live · budget ${total:.2f} · updated {now}"])
-    return cards, status, build_tradelog(recent_trades())
+    return cards, status
 
 
 @app.callback(Output("add-status", "children"), Input("add-btn", "n_clicks"),
@@ -718,13 +823,14 @@ def stop_match(clicks):
 
 # ── auto-launch ───────────────────────────────────────────────────────────────
 def _running_events():
-    """Event tickers that already have a live bot: fresh snapshot logs, plus a
-    recent spawn-lock file (covers bots that started but aren't live-logging yet).
-    The lock file survives a web-app reload, so we never double-spawn a match."""
-    evs = {tk.rsplit("-", 1)[0] for tk in active_matches()}
-    for f in glob.glob(os.path.join(LOG_DIR, ".spawn_*.lock")):
-        if time.time() - os.path.getmtime(f) < 300:
-            evs.add(os.path.basename(f)[len(".spawn_"):-len(".lock")])
+    """Event tickers that already have a live bot, from the lock each bot touches
+    every tick. This is authoritative from the moment a bot starts — snapshot logs
+    are not, because a bot writes nothing until serve stats are ready, which used
+    to let the launcher spawn a duplicate."""
+    evs = set()
+    for f in glob.glob(os.path.join(LOG_DIR, ".bot_*.lock")):
+        if time.time() - os.path.getmtime(f) < cfg.BOT_LOCK_STALE_SECS:
+            evs.add(os.path.basename(f)[len(".bot_"):-len(".lock")])
     return evs
 
 
@@ -740,7 +846,8 @@ def _auto_launch_loop():
                     continue
                 try:
                     subprocess.Popen([sys.executable, "-m", "trade.trade_bot", ev], cwd=REPO_ROOT)
-                    open(os.path.join(LOG_DIR, f".spawn_{ev}.lock"), "w").close()
+                    # the bot takes .bot_<ev>.lock on startup and refuses to run
+                    # if one is already held, so a race here cannot double-trade
                     active.add(ev)
                     print(f"[auto] launched {ev}  ({len(live)} live in series)")
                 except Exception as e:
