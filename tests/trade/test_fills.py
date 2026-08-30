@@ -2,6 +2,7 @@
 import pytest
 import trade.config as cfg
 import trade.trade_bot as tb
+import trade.swing_thresholds as _st_mod
 
 
 PX = {"p1": 0.41, "p2": 0.61}
@@ -25,6 +26,7 @@ def fresh(tmp_path, monkeypatch):
     tb._store.update_mc_prob(KEY, .5, game_prob=.5,
                              cond={"win_game": .9, "lose_game": .1,
                                    "win_set": .9, "lose_set": .1})
+    monkeypatch.setattr(_st_mod, "get_threshold", lambda *a: 0.0)  # gate open for non-swing tests
     yield
 
 
@@ -37,7 +39,7 @@ def test_resting_entry_creates_no_position(monkeypatch):
     """The bug this layer exists to prevent: booking a phantom position."""
     monkeypatch.setattr(tb, "place_order", lambda *a: order(filled=0.0, remaining=5.0))
     monkeypatch.setattr(tb, "order_queue_position", lambda oid, tk=None: 6600.0)
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     assert tb._store.get_or_create(KEY).position is None
     assert tb._store.has_pending(KEY)
 
@@ -46,14 +48,14 @@ def test_budget_is_untouched_until_the_order_fills(monkeypatch):
     monkeypatch.setattr(tb, "place_order", lambda *a: order(filled=0.0, remaining=5.0))
     monkeypatch.setattr(tb, "order_queue_position", lambda oid, tk=None: None)
     before = tb._store.get_or_create(KEY).budget_remaining
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     assert tb._store.get_or_create(KEY).budget_remaining == before
 
 
 def test_fill_on_a_later_tick_books_the_position(monkeypatch):
     monkeypatch.setattr(tb, "place_order", lambda *a: order(filled=0.0, remaining=5.0))
     monkeypatch.setattr(tb, "order_queue_position", lambda oid, tk=None: None)
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
 
     monkeypatch.setattr(tb, "get_order", lambda oid, tk=None: {
         "status": "executed", "filled": 5.0, "remaining": 0.0,
@@ -68,7 +70,7 @@ def test_fill_on_a_later_tick_books_the_position(monkeypatch):
 def test_partial_fill_books_only_what_traded(monkeypatch):
     monkeypatch.setattr(tb, "place_order", lambda *a: order(filled=0.0, remaining=5.0))
     monkeypatch.setattr(tb, "order_queue_position", lambda oid, tk=None: None)
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
 
     monkeypatch.setattr(tb, "get_order", lambda oid, tk=None: {
         "status": "resting", "filled": 2.0, "remaining": 3.0,
@@ -81,7 +83,7 @@ def test_partial_fill_books_only_what_traded(monkeypatch):
 def test_unfilled_order_is_cancelled_when_the_game_ends(monkeypatch):
     monkeypatch.setattr(tb, "place_order", lambda *a: order(filled=0.0, remaining=5.0))
     monkeypatch.setattr(tb, "order_queue_position", lambda oid, tk=None: None)
-    tb._check_entry(KEY, CACHED, st("2-2"), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st("2-2"), 0.40, 0.60, 0.64, 0.64)
 
     cancelled = []
     monkeypatch.setattr(tb, "cancel_order", lambda oid, tk=None: cancelled.append(oid) or True)
@@ -98,7 +100,7 @@ def test_a_fill_racing_the_cancel_is_still_booked(monkeypatch):
     """Cancel and fill can cross; the final poll must not lose the contracts."""
     monkeypatch.setattr(tb, "place_order", lambda *a: order(filled=0.0, remaining=5.0))
     monkeypatch.setattr(tb, "order_queue_position", lambda oid, tk=None: None)
-    tb._check_entry(KEY, CACHED, st("2-2"), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st("2-2"), 0.40, 0.60, 0.64, 0.64)
 
     monkeypatch.setattr(tb, "cancel_order", lambda oid, tk=None: True)
     seq = iter([
@@ -116,7 +118,7 @@ def test_a_fill_racing_the_cancel_is_still_booked(monkeypatch):
 def test_transient_poll_failure_keeps_the_order_pending(monkeypatch):
     monkeypatch.setattr(tb, "place_order", lambda *a: order(filled=0.0, remaining=5.0))
     monkeypatch.setattr(tb, "order_queue_position", lambda oid, tk=None: None)
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     monkeypatch.setattr(tb, "get_order", lambda oid, tk=None: None)       # 429 / timeout
     tb._resolve_pending(KEY, CACHED, st(), PX)
     assert tb._store.has_pending(KEY)                            # not silently dropped
@@ -125,7 +127,7 @@ def test_transient_poll_failure_keeps_the_order_pending(monkeypatch):
 def test_no_new_entry_while_an_order_is_resting(monkeypatch):
     monkeypatch.setattr(tb, "place_order", lambda *a: order(filled=0.0, remaining=5.0))
     monkeypatch.setattr(tb, "order_queue_position", lambda oid, tk=None: None)
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     assert tb._store.has_pending(KEY)
 
 
@@ -135,7 +137,7 @@ def test_immediate_full_fill_behaves_like_before(monkeypatch):
     monkeypatch.setattr(tb, "place_order", lambda *a: {
         "order_id": "o9", "filled": 5.0, "remaining": 0.0,
         "cost_dollars": 3.00, "fee_dollars": 0.09, "avg_price": 0.60})
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     assert tb._store.get_or_create(KEY).position["count"] == 5.0
     assert not tb._store.has_pending(KEY)
 
@@ -214,36 +216,35 @@ def test_the_real_mejdra_round_trip_reconciles():
 
 
 # ── minimum game swing ────────────────────────────────────────────────────────
-# Only trade games worth enough to clear a taker round trip. The gate reads the
-# model's own branch spread, which is already computed and logged.
+# Only trade games worth enough to clear a taker round trip. The gate calls
+# get_threshold(pa_blend, pb_blend, best_of, set_num) from swing_thresholds.py.
 
 def _cond(win, lose):
     return {"win_game": win, "lose_game": lose, "win_set": 0.9, "lose_set": 0.1}
 
 
 def test_low_swing_game_is_skipped(monkeypatch):
-    monkeypatch.setattr(cfg, "MIN_GAME_SWING", 0.30)
+    monkeypatch.setattr(_st_mod, "get_threshold", lambda *a: 0.30)
     placed = []
     monkeypatch.setattr(tb, "place_order", lambda *a: placed.append(a) or None)
     tb._store.update_mc_prob(KEY, 0.50, game_prob=0.5, cond=_cond(0.54, 0.46))  # 8pp
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     assert placed == []
 
 
 def test_high_swing_game_is_traded(monkeypatch):
-    monkeypatch.setattr(cfg, "MIN_GAME_SWING", 0.30)
+    monkeypatch.setattr(_st_mod, "get_threshold", lambda *a: 0.30)
     monkeypatch.setattr(tb, "place_order", lambda t, c, p: {
         "order_id": "s1", "filled": 5.0, "remaining": 0.0,
         "cost_dollars": 3.00, "fee_dollars": 0.09, "avg_price": 0.60})
     tb._store.update_mc_prob(KEY, 0.50, game_prob=0.5, cond=_cond(0.89, 0.55))  # 34pp
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     assert tb._store.get_or_create(KEY).position is not None
 
 
-def test_swing_is_side_independent(monkeypatch):
+def test_swing_is_side_independent():
     """p2's branches are p1's complements swapped, so the spread is a property of
     the game — buying either side faces the same swing."""
-    monkeypatch.setattr(cfg, "MIN_GAME_SWING", 0.30)
     c = _cond(0.89, 0.55)
     p1_swing = abs(c["win_game"] - c["lose_game"])
     p2_swing = abs((1 - c["lose_game"]) - (1 - c["win_game"]))
@@ -251,19 +252,66 @@ def test_swing_is_side_independent(monkeypatch):
 
 
 def test_gate_can_be_disabled(monkeypatch):
-    monkeypatch.setattr(cfg, "MIN_GAME_SWING", 0.0)
+    monkeypatch.setattr(_st_mod, "get_threshold", lambda *a: 0.0)
     monkeypatch.setattr(tb, "place_order", lambda t, c, p: {
         "order_id": "s2", "filled": 5.0, "remaining": 0.0,
         "cost_dollars": 3.00, "fee_dollars": 0.09, "avg_price": 0.60})
     tb._store.update_mc_prob(KEY, 0.50, game_prob=0.5, cond=_cond(0.51, 0.49))  # 2pp
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     assert tb._store.get_or_create(KEY).position is not None
 
 
 def test_no_trade_without_branch_probs(monkeypatch):
-    monkeypatch.setattr(cfg, "MIN_GAME_SWING", 0.30)
+    monkeypatch.setattr(_st_mod, "get_threshold", lambda *a: 0.30)
     placed = []
     monkeypatch.setattr(tb, "place_order", lambda *a: placed.append(a) or None)
     tb._store.update_mc_prob(KEY, 0.50, game_prob=0.5, cond=None)
-    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60)
+    tb._check_entry(KEY, CACHED, st(), 0.40, 0.60, 0.64, 0.64)
     assert placed == []
+
+
+# ── snapshot ordering ─────────────────────────────────────────────────────────
+# The snapshot must be written AFTER trading. Logging first recorded the side we
+# were about to sell, which showed up as "holding the server" at every rotation.
+
+def _stat_stub():
+    d = {"first_in": 0.6, "win_first": 0.7, "win_second": 0.5,
+         "return_first": 0.3, "return_second": 0.45}
+    for k in list(d):
+        d[k + "_num"] = 0
+        d[k + "_den"] = 0
+    return d
+
+
+def _sim_stub():
+    return {"p1_stats": _stat_stub(), "p2_stats": _stat_stub(),
+            "p1_name": "Alpha", "p2_name": "Bravo", "best_of": 3,
+            "mc_prob": .5, "set_prob": .5, "game_prob": .5, "report": None,
+            "probs": {"pa_blend": .64, "pb_blend": .64, "wt_a": .5, "wt_b": .5,
+                      "cond": {"win_game": .9, "lose_game": .1,
+                               "win_set": .9, "lose_set": .1},
+                      "vol": {"point": .01, "game": .02}}}
+
+
+def test_snapshot_reflects_the_position_after_trading(monkeypatch, tmp_path):
+    import csv as _csv
+    monkeypatch.setattr(cfg, "LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(cfg, "DRY_RUN", True)
+    cached = dict(CACHED, p1_name_kalshi="Alpha", p2_name_kalshi="Bravo",
+                  prematch_price=0.5, pa0=0.64, pb0=0.64, milestone_id="m")
+
+    # holding P2 from the block that just ended; serve has now rotated to P2
+    tb._store.set_position(KEY, "EV-P2", 0.40, 5.0, "6-6|p1")
+    state = dict(st("6-6", p1_serves=False, g="1-2"), p1_last10=None, p2_last10=None)
+
+    tb._check_exit(KEY, cached, state, 0.60, 0.40)
+    assert tb._store.get_or_create(KEY).position is None      # sold before logging
+
+    tb._log_and_print({"event_ticker": KEY}, cached, state, _sim_stub(),
+                      0.60, 0.59, 0.41, 0.40)
+
+    f = next(p for p in tmp_path.iterdir() if p.name.startswith("match_snapshots"))
+    row = list(_csv.DictReader(f.open()))[-1]
+    assert row["position_side"] == ""          # flat, not "p2 while p2 serves"
+    assert row["position_game_id"] == ""
+    assert row["server"] == "p2"

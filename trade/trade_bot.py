@@ -19,8 +19,9 @@ from trade.kalshi_client import (get_best_ask_bid, place_order, close_position,
 from trade.exact         import (estimate_win_prob_market, implied_point_probs,
                                   match_report, _parse_match_state, _parse_game_score)
 from trade.state         import MatchStateStore
-from trade.decision      import compute_entry, on_serve
-from trade               import logger
+from trade.decision        import compute_entry, on_serve
+import trade.swing_thresholds as _swing_thresholds
+from trade                 import logger
 
 
 # State is keyed by event_ticker: one budget and one position per match,
@@ -301,7 +302,8 @@ def _init_event(event_ticker):
 
 def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid):
     """Re-run the exact sim from Kalshi's live serve stats. Updates store + cache,
-    logs snapshot, prints dashboard. Returns True on success, False if stats aren't ready.
+    Returns a sim-result dict, or None if serve stats aren't ready yet. Logging and
+    printing happen later in the tick, once trades have settled.
 
     Score, server, and serve stats all come from the same Kalshi milestone payload —
     so the two-source lag the old Hawkeye path guarded against can't happen here."""
@@ -311,7 +313,7 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     p1_stats, p2_stats = kalshi_state["p1_stats"], kalshi_state["p2_stats"]
     if not (serve_stats_ready(p1_stats) and serve_stats_ready(p2_stats)):
         print(f"[poll] serve stats not ready yet ({cached['p1_ticker']})")
-        return False
+        return None
 
     p1_name, p2_name = cached["p1_name_kalshi"], cached["p2_name_kalshi"]
     best_of = cached["best_of"]
@@ -359,6 +361,25 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     cached["p1_name"] = p1_name
     cached["p2_name"] = p2_name
 
+    # Everything the snapshot and dashboard need. Handed back rather than written
+    # here: the position is not settled until the exit/entry run later in the tick,
+    # and logging first recorded us holding the side we were about to sell —
+    # which showed up as "holding the server" at every serve rotation.
+    return {
+        "p1_stats": p1_stats, "p2_stats": p2_stats,
+        "p1_name": p1_name, "p2_name": p2_name, "best_of": best_of,
+        "mc_prob": mc_prob, "set_prob": set_prob, "game_prob": game_prob,
+        "probs": probs, "report": report,
+    }
+
+
+def _log_and_print(mc, cached, kalshi_state, sim, p1_ask, p1_bid, p2_ask, p2_bid):
+    """Record the tick AFTER trading, so the snapshot shows what we actually hold."""
+    key = mc["event_ticker"]
+    ms = _store.get_or_create(key)
+    probs, best_of = sim["probs"], sim["best_of"]
+    p1_name, p2_name = sim["p1_name"], sim["p2_name"]
+
     pos      = ms.position
     pos_side = _pos_player(cached, pos) if pos else None
     pos_value = (p1_bid if pos_side == "p1" else p2_bid) if pos else None
@@ -366,15 +387,15 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
         cached["p1_ticker"], p1_name, p2_name,
         kalshi_state["score_str"], kalshi_state["game_score_str"],
         "p1" if kalshi_state["p1_serves"] else "p2",
-        p1_stats, p2_stats,
+        sim["p1_stats"], sim["p2_stats"],
         kalshi_state["p1_last10"], kalshi_state["p2_last10"],
-        mc_prob, set_prob, game_prob,
+        sim["mc_prob"], sim["set_prob"], sim["game_prob"],
         p1_ask, p1_bid, p2_ask, p2_bid,
         ms, pos_side, pos_value,
         p1_kstats=kalshi_state.get("p1_kstats"), p2_kstats=kalshi_state.get("p2_kstats"),
         prematch_price=cached["prematch_price"], pa0=cached["pa0"], pb0=cached["pb0"],
         pa_blend=probs["pa_blend"], pb_blend=probs["pb_blend"],
-        report=report, vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
+        report=sim["report"], vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
         best_of=best_of, cond=probs["cond"], milestone_id=cached["milestone_id"],
         queue_ahead=_queue_ahead.get(key),
     )
@@ -384,13 +405,12 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
            "pb_blend": probs["pb_blend"], "wt_a": probs["wt_a"], "wt_b": probs["wt_b"]}
     _print_poll(cached, p1_name, p2_name,
                 kalshi_state["score_str"], kalshi_state["game_score_str"],
-                server_name, p1_stats, p2_stats, mkt,
-                mc_prob, game_prob, set_prob,
+                server_name, sim["p1_stats"], sim["p2_stats"], mkt,
+                sim["mc_prob"], sim["game_prob"], sim["set_prob"],
                 p1_ask, p1_bid, p2_ask, p2_bid, best_of,
-                _store.get_or_create(key), report=report,
+                ms, report=sim["report"],
                 vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
                 cond=probs["cond"])
-    return True
 
 
 def _book_fill(key, cached, p, qty, cost, fee):
@@ -491,7 +511,7 @@ def _register_order(key, fill, kind, ticker, player, count, price, game_id,
           + (f"  queue ahead: {q:g}" if q is not None else ""))
 
 
-def _check_entry(key, cached, kalshi_state, p1_px, p2_px):
+def _check_entry(key, cached, kalshi_state, p1_px, p2_px, pa_blend, pb_blend):
     """Buy whoever is about to RECEIVE, at a fixed size.
     p1_px/p2_px are the bids in MAKER_MODE (we rest) and the asks otherwise."""
     ms = _store.get_or_create(key)
@@ -511,9 +531,12 @@ def _check_entry(key, cached, kalshi_state, p1_px, p2_px):
     if c is None:
         return
     swing = abs(c["win_game"] - c["lose_game"])
-    if swing < cfg.MIN_GAME_SWING:
+    sets_won, _ = _parse_match_state(kalshi_state["score_str"], cached["best_of"])
+    set_num = sum(sets_won) + 1  # 1-indexed current set
+    min_swing = _swing_thresholds.get_threshold(pa_blend, pb_blend, cached["best_of"], set_num)
+    if swing < min_swing:
         print(f"[entry] skipped {ticker}: this game swings only {swing*100:.0f}pp "
-              f"(need {cfg.MIN_GAME_SWING*100:.0f}pp) — too small to clear the fee")
+              f"(need {min_swing*100:.0f}pp in set {set_num}) — too small to clear the fee")
         return
 
     # Logged for analysis only — nothing about the trade depends on the model.
@@ -675,17 +698,16 @@ def _tick(mc):
     # or as a heartbeat when the cached mc_prob has gone stale.
     score_key = (kalshi_state["score_str"], kalshi_state["game_score_str"],
                  kalshi_state["p1_serves"])
-    sim_fresh = False
+    sim = None
     if score_key != ms.last_sim_score or _store.is_mc_stale(key):
         att  = _sim_attempts.get(key)
         same = att is not None and att["score_key"] == score_key
         # Throttle retries when stats aren't ready yet (early in a match); a new
         # score runs immediately.
         if not same or time.time() - att["ts"] >= cfg.SIM_RETRY_SECS:
-            result = _run_sim(mc, cached, kalshi_state, score_key,
-                              p1_ask, p1_bid, p2_ask, p2_bid)
+            sim = _run_sim(mc, cached, kalshi_state, score_key,
+                           p1_ask, p1_bid, p2_ask, p2_bid)
             _sim_attempts[key] = {"score_key": score_key, "ts": time.time()}
-            sim_fresh = result is True
 
     # Which side of the book we trade on. MAKER rests: we buy at the bid and sell
     # at the ask. TAKER crosses: buy the ask, sell the bid.
@@ -709,7 +731,7 @@ def _tick(mc):
                                cached["best_of"])
     if (not _store.has_position(key)
             and not _store.has_pending(key)
-            and sim_fresh
+            and sim is not None
             and on_serve(serve_score, kalshi_state["p1_serves"])
             and not _store.is_budget_exhausted(key)):
         # Re-fetch prices: the sim takes a moment and the market may have moved
@@ -718,7 +740,12 @@ def _tick(mc):
         a2, b2 = get_best_ask_bid(cached["p2_ticker"])
         px1, px2 = (b1, b2) if cfg.MAKER_MODE else (a1, a2)
         if px1 is not None and px2 is not None:
-            _check_entry(key, cached, kalshi_state, px1, px2)
+            _check_entry(key, cached, kalshi_state, px1, px2,
+                         sim["probs"]["pa_blend"], sim["probs"]["pb_blend"])
+
+    # Record last, so the snapshot reflects the position we ended the tick with.
+    if sim is not None:
+        _log_and_print(mc, cached, kalshi_state, sim, p1_ask, p1_bid, p2_ask, p2_bid)
 
 
 def main():

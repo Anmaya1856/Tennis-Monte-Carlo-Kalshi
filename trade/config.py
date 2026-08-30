@@ -1,5 +1,5 @@
 # Trading parameters
-MATCH_BUDGET      = 5.00
+MATCH_BUDGET      = 20.00
 # Receiver-roll strategy: while the current set is within MAX_GAME_DIFF games,
 # hold the player about to RECEIVE and square off when the game ends. No stop
 # loss, no trailing lock, no profit target — the game boundary is the only exit.
@@ -9,19 +9,20 @@ MAX_GAME_DIFF     = 1     # only hold a position while |p1 games - p2 games| <= 
 # tiebreak was 400-520s against ~45s points, so a position sits on the wrong side
 # for eight-plus points. Off until exits are fast enough — the logic is retained,
 # not deleted, so flipping this back on restores it.
-TRADE_TIEBREAKS   = True
-CONTRACTS_PER_TRADE = 5   # fixed size. No Kelly and no edge test: every on-serve
+TRADE_TIEBREAKS   = False
+CONTRACTS_PER_TRADE = 20   # fixed size. No Kelly and no edge test: every on-serve
                           # game boundary buys this many contracts of the receiver.
 # Only trade when THIS game is worth something. The gate is the model's own branch
 # spread, |cond_win_game - cond_lose_game|: how much match probability turns on the
 # game about to be played. It is what separates 5-5 in a decider (one break moves
 # the price ~29c) from 1-1 in set one (~7c) — and a taker round trip costs 9-11c at
 # 5 contracts, so low-swing games cannot clear the fee even when the call is right.
-# Measured on 94 logged round trips:
-#     swing < 0.10  ->  19 trades, -$1.13, 16% win, avg move  7.6c
-#     swing > 0.30  ->  22 trades, +$5.36, 53% win, avg move 28.9c
-# Set to 0.0 to trade every on-serve boundary as before.
-MIN_GAME_SWING = 0.15
+# Thresholds are looked up from data/swing_thresholds.db (keyed by pA, pB, set_num)
+# rather than stored statically here — run simulation/precompute_swing_thresholds.ipynb
+# to generate the DB.  The bot falls back to max(SWING_FLOOR, 0.15) if the DB is absent.
+KEEP_FRACTION       = 0.30   # retain the top 30% of on-serve games by swing
+SWING_FLOOR         = 0.12   # hard minimum — below this the taker fee cannot be cleared
+SWING_THRESHOLDS_DB = "data/swing_thresholds.db"
 # Execution mode. MAKER quotes passively: buy at the BID, sell at the ASK, and pay
 # the maker fee instead of the taker fee. Kalshi's maker fee is
 #   round up(M x 0.0175 x C x P x (1-P))   with M defaulting to 0, i.e. free.
@@ -74,9 +75,11 @@ LOG_DIR = "data/logs"
 
 # Auto-launch: the monitor discovers live matches in these Kalshi series and spawns
 # a bot process per match (no manual entry). Set AUTO_LAUNCH = False to disable.
-AUTO_LAUNCH = False
-AUTO_LAUNCH_SERIES = ("KXATPMATCH", "KXATPCHALLENGERMATCH")
-AUTO_LAUNCH_MAX = 5          # cap on concurrent auto-launched matches
+AUTO_LAUNCH = True
+AUTO_LAUNCH_SERIES = ("KXATPMATCH",
+                    #    "KXATPCHALLENGERMATCH"
+                       )
+AUTO_LAUNCH_MAX = 4          # cap on concurrent auto-launched matches
 AUTO_LAUNCH_POLL_SECS = 60    # how often to scan Kalshi for newly-live matches
 
 # Match configuration
