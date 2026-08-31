@@ -21,7 +21,7 @@ CONTRACTS_PER_TRADE = 20   # fixed size. No Kelly and no edge test: every on-ser
 # rather than stored statically here — run simulation/precompute_swing_thresholds.ipynb
 # to generate the DB.  The bot falls back to max(SWING_FLOOR, 0.15) if the DB is absent.
 KEEP_FRACTION       = 0.30   # retain the top 30% of on-serve games by swing
-SWING_FLOOR         = 0.12   # hard minimum — below this the taker fee cannot be cleared
+SWING_FLOOR         = 0.08   # hard minimum — below this the taker fee cannot be cleared
 SWING_THRESHOLDS_DB = "data/swing_thresholds.db"
 # Execution mode. MAKER quotes passively: buy at the BID, sell at the ASK, and pay
 # the maker fee instead of the taker fee. Kalshi's maker fee is
@@ -46,6 +46,7 @@ MATCH_END_GRACE_SECS = 900  # exit the bot if the milestone stays not-live this 
 INIT_TIMEOUT_SECS    = 120  # exit if a match never initializes within this long (likely a bad ticker)
 BOT_LOCK_STALE_SECS  = 30   # a bot touches .bot_<event>.lock every tick; older than this = dead
 N_DRAWS           = 1000     # stat draws for the exact engine; each draw evaluated exactly
+RANDOM_SEED       = 42       # seed for Beta draws in estimate_win_prob_market — same state → same draws
 BP_PRESSURE       = 0.03      # subtract this from the server's point-win prob at break points (serving under pressure); 0 = off
 DRY_RUN           = True
 
@@ -60,7 +61,8 @@ MARKET_PRIOR_N = 40       # market-implied point probs worth this many virtual s
 # two methods differ by 1.8c on average — under a point of serve probability.
 PREMATCH_LOOKBACK_HOURS = 5
 INVERSION_BASE = 0.64     # assumed tour-average serve level; fixes the overall level in the inversion
-GAME_THRESHOLDS = [16.5, 17.5, 18.5, 19.5, 20.5, 21.5, 22.5, 23.5, 25.5, 26.5, 27.5, 30.5]  # log P(total match games > X) for each; changeable
+# GAME_THRESHOLDS = [16.5, 17.5, 18.5, 19.5, 20.5, 21.5, 22.5, 23.5, 25.5, 26.5, 27.5, 30.5]  # log P(total match games > X) for each; changeable
+GAME_THRESHOLDS = [34.5, 35.5, 36.5, 37.5, 38.5, 39.5, 40.5, 41.5, 42.5, 43.5, 44.5, 45.5]  # log P(total match games > X) for each; changeable
 
 # Kalshi API credentials
 API_KEY     = "982c924c-9e22-44c8-a801-3be1ff50d45d"
@@ -73,14 +75,12 @@ KALSHI_BASE = "https://external-api.kalshi.com"
 # than fragment.
 LOG_DIR = "data/logs"
 
-# Auto-launch: the monitor discovers live matches in these Kalshi series and spawns
-# a bot process per match (no manual entry). Set AUTO_LAUNCH = False to disable.
-AUTO_LAUNCH = True
+# Discovery: the monitor scans these Kalshi series and lists live matches in the
+# sidebar so you can choose which to launch manually.
 AUTO_LAUNCH_SERIES = ("KXATPMATCH",
-                    #    "KXATPCHALLENGERMATCH"
+                       "KXATPCHALLENGERMATCH"
                        )
-AUTO_LAUNCH_MAX = 4          # cap on concurrent auto-launched matches
-AUTO_LAUNCH_POLL_SECS = 60    # how often to scan Kalshi for newly-live matches
+AUTO_LAUNCH_POLL_SECS = 600    # how often to scan Kalshi for newly-live matches
 
 # Match configuration
 # Each entry: event_ticker, and optional budget (dollars; defaults to MATCH_BUDGET).

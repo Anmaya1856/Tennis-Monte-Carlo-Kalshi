@@ -42,6 +42,11 @@ _sim_attempts = {}
 # fills are achievable, and it is useless unless captured over time.
 _queue_ahead = {}
 
+# event_ticker → {"game_id": str, "allowed": bool}
+# Swing gate: evaluated once per game (at 0-0, or when the bot first joins mid-game)
+# and held for the rest of that game so mid-game stat drift cannot change the decision.
+_entry_gate = {}
+
 # event_ticker → health, so a process self-terminates on sustained failure:
 # {"first_seen", "last_init", "not_live_since"}.
 _match_health = {}
@@ -511,9 +516,10 @@ def _register_order(key, fill, kind, ticker, player, count, price, game_id,
           + (f"  queue ahead: {q:g}" if q is not None else ""))
 
 
-def _check_entry(key, cached, kalshi_state, p1_px, p2_px, pa_blend, pb_blend):
+def _check_entry(key, cached, kalshi_state, p1_px, p2_px):
     """Buy whoever is about to RECEIVE, at a fixed size.
-    p1_px/p2_px are the bids in MAKER_MODE (we rest) and the asks otherwise."""
+    p1_px/p2_px are the bids in MAKER_MODE (we rest) and the asks otherwise.
+    The swing gate is evaluated once per game in _tick() before this is called."""
     ms = _store.get_or_create(key)
 
     # The receiver of the game about to be played is whoever is not serving it.
@@ -523,21 +529,6 @@ def _check_entry(key, cached, kalshi_state, p1_px, p2_px, pa_blend, pb_blend):
     receiver = "p2" if kalshi_state["p1_serves"] else "p1"
     ticker   = cached["p1_ticker"] if receiver == "p1" else cached["p2_ticker"]
     ask      = p1_px if receiver == "p1" else p2_px
-
-    # Only trade games that are worth trading. The branch spread is the same
-    # magnitude for either player (p2's branches are p1's complements, swapped),
-    # so this is a property of the game, not of the side we are buying.
-    c = ms.last_cond
-    if c is None:
-        return
-    swing = abs(c["win_game"] - c["lose_game"])
-    sets_won, _ = _parse_match_state(kalshi_state["score_str"], cached["best_of"])
-    set_num = sum(sets_won) + 1  # 1-indexed current set
-    min_swing = _swing_thresholds.get_threshold(pa_blend, pb_blend, cached["best_of"], set_num)
-    if swing < min_swing:
-        print(f"[entry] skipped {ticker}: this game swings only {swing*100:.0f}pp "
-              f"(need {min_swing*100:.0f}pp in set {set_num}) — too small to clear the fee")
-        return
 
     # Logged for analysis only — nothing about the trade depends on the model.
     gp = ms.last_game_prob
@@ -578,10 +569,50 @@ def _check_entry(key, cached, kalshi_state, p1_px, p2_px, pa_blend, pb_blend):
           f"  price={order_params['entry_price']:.3f}"
           f"  count={fill['filled']:g}"
           f"  break={bp}"
-          f"  swing={swing*100:.0f}pp"
           f"  cost=${fill['cost_dollars']:.2f}"
           f"  fee=${fill['fee_dollars']:.3f}"
           f"  budget_left=${_store.get_or_create(key).budget_remaining:.2f} ***")
+
+
+def _liquidate(event_ticker, reason="shutdown"):
+    """Close any open position at the current market bid. Called on graceful shutdown."""
+    cached = _match_cache.get(event_ticker)
+    if cached is None:
+        return
+    ms  = _store.get_or_create(event_ticker)
+    pos = ms.position
+    if pos is None:
+        return
+
+    _, bid = get_best_ask_bid(pos["ticker"])
+    if bid is None:
+        print(f"[{reason}] {event_ticker}: no bid available — "
+              f"position NOT closed ({pos['count']:g} x {pos['ticker']})")
+        return
+
+    qty  = pos["count"]
+    fill = close_position(pos["ticker"], qty, round(bid * 100))
+    if fill is None or fill["filled"] <= 1e-9:
+        print(f"[{reason}] {event_ticker}: close order failed — "
+              f"position NOT closed ({qty:g} x {pos['ticker']})")
+        return
+
+    sold     = fill["filled"]
+    proceeds = fill["cost_dollars"] - fill["fee_dollars"]
+    pnl      = proceeds - sold * pos["entry_price"]
+    _store.restore_proceeds(event_ticker, proceeds)
+    _store.reduce_position(event_ticker, sold)
+    player = "p1" if pos["ticker"] == cached["p1_ticker"] else "p2"
+    logger.log_trade(
+        pos["ticker"], "", "",
+        player, reason,
+        pos["entry_price"], fill["avg_price"] or bid,
+        ms.last_mc_prob, 0.0,
+        fill["fee_dollars"], pnl,
+        _store.get_or_create(event_ticker).budget_remaining,
+    )
+    print(f"[{reason}] {event_ticker}: closed {sold:g} x {pos['ticker']} "
+          f"@ {fill['avg_price'] or bid:.2f}  pnl={pnl:+.4f}")
 
 
 def _check_exit(key, cached, kalshi_state, p1_px, p2_px):
@@ -672,18 +703,61 @@ def _tick(mc):
     # Kalshi live score + server (every tick — fast, public, reliable)
     details = fetch_milestone(cached["milestone_id"])
     if details is None:
+        # Network error — grace timer guards against transient blips
         if h["not_live_since"] is None:
             h["not_live_since"] = time.time()
         elif time.time() - h["not_live_since"] > cfg.MATCH_END_GRACE_SECS:
-            print(f"[stop] {event_ticker}: milestone not live for "
-                  f">{cfg.MATCH_END_GRACE_SECS // 60} min — match over, exiting")
+            print(f"[stop] {event_ticker}: no milestone data for "
+                  f">{cfg.MATCH_END_GRACE_SECS // 60} min — exiting")
             return "dead"
-        print(f"[poll] milestone not live (id={cached['milestone_id']})")
+        print(f"[poll] milestone fetch failed (id={cached['milestone_id']})")
         return
-    h["not_live_since"] = None   # match is live again — reset the grace timer
+
+    h["not_live_since"] = None  # got a response — reset grace timer
+
+    match_status = details.get("match_status")
+    status       = details.get("status")
+
+    if status not in ("live", "suspended"):
+        # Match is over in some form (ended, retired, walkover, abandoned, …)
+        winner_id    = details.get("winner")
+        p1_won       = (winner_id == cached["p1_competitor_id"])
+        winner_name  = cached["p1_name"] if p1_won else cached["p2_name"]
+        winner_ticker = cached["p1_ticker"] if p1_won else cached["p2_ticker"]
+        print(f"[done] {event_ticker}: status={status!r} match_status={match_status!r} "
+              f"— winner {winner_name}")
+
+        ms  = _store.get_or_create(key)
+        pos = ms.position
+        if pos is not None:
+            # Settlement: winner pays $1, loser pays $0, no fee
+            settle_px = 1.0 if pos["ticker"] == winner_ticker else 0.0
+            qty       = pos["count"]
+            proceeds  = qty * settle_px
+            pnl       = proceeds - qty * pos["entry_price"]
+            _store.restore_proceeds(key, proceeds)
+            _store.reduce_position(key, qty)
+            player = "p1" if pos["ticker"] == cached["p1_ticker"] else "p2"
+            logger.log_trade(
+                pos["ticker"], "", "",
+                player, "settlement",
+                pos["entry_price"], settle_px,
+                ms.last_mc_prob, 0.0,
+                0.0, pnl,
+                _store.get_or_create(key).budget_remaining,
+            )
+            print(f"[done] settled {qty} x {pos['ticker']} @ {settle_px:.2f}  pnl={pnl:+.4f}")
+
+        logger.log_outcome(cached["p1_ticker"], match_status, winner_name)
+        return "dead"
+
+    if status == "suspended":
+        print(f"[poll] {event_ticker}: match suspended — holding")
+        return
+
     kalshi_state = parse_milestone_state(details, cached["p1_competitor_id"])
     if not kalshi_state["is_live"]:
-        print(f"[poll] match state is not live")
+        print(f"[poll] {event_ticker} (milestone={cached['milestone_id']}): match state is not live")
         return
 
     p1_ask, p1_bid = get_best_ask_bid(cached["p1_ticker"])
@@ -729,10 +803,34 @@ def _tick(mc):
     # game prob — a cached one belongs to the game that just finished.
     serve_score = _serve_score(kalshi_state["score_str"], kalshi_state["game_score_str"],
                                cached["best_of"])
+
+    # Swing gate: evaluated once when a new game is first seen (at 0-0 or when the bot
+    # joins mid-game). Held for the rest of that game so mid-game stat drift cannot flip
+    # the decision after we have already committed to sitting out or trading.
+    now_game_id = _game_id(kalshi_state, cached["best_of"])
+    gate = _entry_gate.get(key)
+    if sim is not None and (gate is None or gate["game_id"] != now_game_id):
+        c = ms.last_cond
+        is_on_serve = on_serve(serve_score, kalshi_state["p1_serves"])
+        if c is not None and is_on_serve:
+            swing = abs(c["win_game"] - c["lose_game"])
+            sets_won, _ = _parse_match_state(kalshi_state["score_str"], cached["best_of"])
+            set_num = sum(sets_won) + 1
+            min_swing = _swing_thresholds.get_threshold(
+                sim["probs"]["pa_blend"], sim["probs"]["pb_blend"],
+                cached["best_of"], set_num)
+            allowed = swing >= min_swing
+            print(f"[gate] {now_game_id}: swing={swing*100:.1f}pp "
+                  f"thresh={min_swing*100:.1f}pp → {'OPEN' if allowed else 'closed'}")
+        else:
+            allowed = False
+        _entry_gate[key] = {"game_id": now_game_id, "allowed": allowed}
+
     if (not _store.has_position(key)
             and not _store.has_pending(key)
             and sim is not None
             and on_serve(serve_score, kalshi_state["p1_serves"])
+            and _entry_gate.get(key, {}).get("allowed", False)
             and not _store.is_budget_exhausted(key)):
         # Re-fetch prices: the sim takes a moment and the market may have moved
         # since the tick started.
@@ -740,8 +838,7 @@ def _tick(mc):
         a2, b2 = get_best_ask_bid(cached["p2_ticker"])
         px1, px2 = (b1, b2) if cfg.MAKER_MODE else (a1, a2)
         if px1 is not None and px2 is not None:
-            _check_entry(key, cached, kalshi_state, px1, px2,
-                         sim["probs"]["pa_blend"], sim["probs"]["pb_blend"])
+            _check_entry(key, cached, kalshi_state, px1, px2)
 
     # Record last, so the snapshot reflects the position we ended the tick with.
     if sim is not None:
@@ -791,7 +888,7 @@ def main():
                 _heartbeat(mc["event_ticker"])
                 if _stop_requested(mc["event_ticker"]):
                     print(f"[stop] {mc['event_ticker']}: stop requested from monitor — exiting")
-                    return
+                    return  # finally block handles liquidation
                 if _tick(mc) == "dead":
                     _release(mc["event_ticker"])
                     matches.remove(mc)
@@ -801,6 +898,7 @@ def main():
             time.sleep(cfg.FAST_POLL_SECS)
     finally:
         for mc in matches:
+            _liquidate(mc["event_ticker"])
             _release(mc["event_ticker"])
 
 

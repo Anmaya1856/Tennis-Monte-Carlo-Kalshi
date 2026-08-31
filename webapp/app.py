@@ -15,6 +15,7 @@ import plotly.graph_objects as go
 from dash import Dash, dcc, html, ctx, Input, Output, State, ALL
 
 import trade.config as cfg
+import trade.swing_thresholds as _sw_thr
 from trade.decision import on_serve
 from trade.kalshi_client import discover_live_events
 from trade.exact import (win_probs, win_prob_forward, weighted_quantile,
@@ -50,6 +51,12 @@ def _num(row, col):
         return v if pd.notna(v) else None
     except (TypeError, ValueError):
         return None
+
+
+def _str(row, col, default=""):
+    """Return string value from row, treating NaN/None as default."""
+    v = row.get(col)
+    return default if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v)
 
 
 def active_matches():
@@ -99,10 +106,10 @@ def branch_probs(last):
     if pa is None or pb is None:
         return None
     try:
-        best_of = int(float(last.get("best_of") or 3))
-        sets_won, cur = _parse_match_state(str(last.get("score_str") or "0-0"), best_of)
+        best_of = int(_num(last, "best_of") or 3)
+        sets_won, cur = _parse_match_state(_str(last, "score_str", "0-0"), best_of)
         in_tb = cur == (6, 6)
-        gs = _parse_game_score(str(last.get("game_score_str") or "0-0"), is_tiebreak=in_tb)
+        gs = _parse_game_score(_str(last, "game_score_str", "0-0"), is_tiebreak=in_tb)
         r = win_probs(pa, pb, sets_won, cur or (0, 0), in_tb, gs,
                       last.get("server") == "p1", best_of)
         return {k: float(r["cond"][k]) for k in keys}
@@ -273,10 +280,10 @@ def compute_forward(last, max_games=6):
     if pa is None or pb is None:
         return None
     try:
-        best_of = int(float(last.get("best_of") or 3))
-        sets_won, cur = _parse_match_state(str(last.get("score_str") or "0-0"), best_of)
+        best_of = int(_num(last, "best_of") or 3)
+        sets_won, cur = _parse_match_state(_str(last, "score_str", "0-0"), best_of)
         in_tb = cur == (6, 6)
-        gs = _parse_game_score(str(last.get("game_score_str") or "0-0"), is_tiebreak=in_tb)
+        gs = _parse_game_score(_str(last, "game_score_str", "0-0"), is_tiebreak=in_tb)
         return win_prob_forward(pa, pb, sets_won, cur or (0, 0), in_tb, gs,
                                 last.get("server") == "p1", best_of, max_games=max_games)
     except Exception:
@@ -407,8 +414,8 @@ def serve_probs(last, p1, p2):
 
 def scoreboard(p1full, p2full, last):
     """Two-line scoreboard, one row per player: name · serve · per-set games · game point."""
-    score_str = str(last.get("score_str") or "").strip()
-    game_str = str(last.get("game_score_str") or "")
+    score_str = _str(last, "score_str").strip()
+    game_str  = _str(last, "game_score_str")
     server = last.get("server")
     try:
         sets = _parse_score(score_str) if score_str else []
@@ -440,7 +447,7 @@ def build_card(ticker, g):
     event = ticker.rsplit("-", 1)[0]
     p1full, p2full = last.get("p1_name", "P1"), last.get("p2_name", "P2")
     p1, p2 = _last_name(p1full), _last_name(p2full)
-    best_of = int(float(last.get("best_of") or 3))
+    best_of = int(_num(last, "best_of") or 3)
 
     mc = _num(last, "mc_prob_p1")
     st = _num(last, "mc_set_prob_p1")
@@ -475,7 +482,8 @@ def build_card(ticker, g):
     score = scoreboard(p1full, p2full, last)
 
     # The strategy buys the receiver while the set is unbroken.
-    _, cur_games = _parse_match_state(str(last.get("score_str") or "0-0"), best_of)
+    sets_won_list, cur_games = _parse_match_state(_str(last, "score_str", "0-0"), best_of)
+    set_num = sets_won_list[0] + sets_won_list[1] + 1
     srv = last.get("server")
     live = on_serve(cur_games, srv == "p1")
     p1_badge = "RECEIVER" if (srv == "p2" and live) else None
@@ -527,6 +535,25 @@ def build_card(ticker, g):
     tiles.append(ft_tile("MODEL−MARKET", f"{dv:.2f}" if dv is not None else "—",
                          "divergence, diagnostic only"))
 
+    # swing threshold for this set
+    pa_bl, pb_bl = _num(last, "pa_blend"), _num(last, "pb_blend")
+    thr = None
+    if pa_bl is not None and pb_bl is not None:
+        try:
+            thr = _sw_thr.get_threshold(pa_bl, pb_bl, best_of, set_num)
+        except Exception:
+            pass
+    actual_swing = (b["win_game"] - b["lose_game"]) if b else None
+    if thr is not None:
+        clears = actual_swing is not None and actual_swing >= thr
+        thr_color = GOOD if clears else WARN
+        sub = (f"actual {actual_swing * 100:.1f}pp  ✓" if clears
+               else f"actual {actual_swing * 100:.1f}pp  ✗" if actual_swing is not None
+               else f"set {set_num}  ·  keep {cfg.KEEP_FRACTION * 100:.0f}%")
+        tiles.append(ft_tile("SWING GATE", f"{thr * 100:.1f}pp", sub, thr_color))
+    else:
+        tiles.append(ft_tile("SWING GATE", "—", "DB not found — fallback active", WARN))
+
     footer = html.Div([
         html.Div("OUR POSITION  ·  RISK", className="grp-label"),
         html.Div(tiles, className="ft-grid"),
@@ -540,7 +567,8 @@ def build_card(ticker, g):
                      serve_probs(last, p1, p2), service_stats(last),
                      scoreline_readout(last, best_of, p1, p2),
                      over_under_readout(last), charts, footer,
-                     build_tradelog(event, p1, p2)], className="card")
+                     build_tradelog(event, p1, p2)], className="card",
+                    id=f"card-{event}")
 
 
 def build_tradelog(event_ticker, p1, p2):
@@ -620,23 +648,55 @@ app.index_string = """<!DOCTYPE html><html><head>{%metas%}<title>{%title%}</titl
   * { box-sizing:border-box; }
   body { margin:0; background:""" + PLANE + """; color:""" + INK + """; font-size:16px;
          font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
-  .wrap { max-width:1200px; margin:0 auto; padding:22px 26px 60px; }
-  .topbar { display:flex; align-items:center; gap:16px; margin-bottom:6px; }
-  .brand { font-size:20px; font-weight:750; letter-spacing:-.01em; }
-  .status { color:""" + INK2 + """; font-size:16px; font-variant-numeric:tabular-nums; }
-  .mode { font-size:16px; font-weight:800; padding:2px 8px; border-radius:5px;
-          background:rgba(250,178,25,.16); color:""" + WARN + """; letter-spacing:.05em; margin-right:8px; }
-  .addbar { display:flex; align-items:center; gap:8px; margin:14px 0 22px; }
-  .addbar input { background:""" + INSET + """; color:""" + INK + """; border:1px solid """ + HAIR + """;
-                  border-radius:7px; padding:9px 12px; font-size:16px; outline:none; }
-  .addbar input:focus { border-color:""" + P1C + """; }
-  .addbtn { background:""" + P1C + """; color:#06121f; border:none; border-radius:7px;
-            padding:9px 16px; font-weight:750; font-size:16px; cursor:pointer; }
-  .addbtn:hover { filter:brightness(1.08); }
-  .add-status { color:""" + MUTED + """; font-size:16px; }
+  .wrap { display:flex; min-height:100vh; }
+
+  /* ── fixed sidebar ── */
+  .sidebar { width:300px; flex-shrink:0; position:fixed; left:0; top:0; height:100vh;
+             overflow-y:auto; background:""" + SURFACE + """; border-right:1px solid """ + HAIR + """;
+             padding:22px 20px 40px; display:flex; flex-direction:column; gap:24px; }
+  .main { margin-left:300px; flex:1; min-width:0; padding:24px 28px 60px; }
+
+  /* sidebar header */
+  .brand { font-size:19px; font-weight:750; letter-spacing:-.01em; margin-bottom:6px; }
+  .mode { display:inline-block; font-size:13px; font-weight:800; padding:2px 8px; border-radius:5px;
+          background:rgba(250,178,25,.16); color:""" + WARN + """; letter-spacing:.05em; margin-bottom:4px; }
+  .sb-stat { font-size:15px; color:""" + INK2 + """; font-variant-numeric:tabular-nums;
+             line-height:1.6; }
+
+  /* sidebar sections */
+  .sb-section { display:flex; flex-direction:column; gap:0; }
+  .sb-panel-title { font-size:13px; font-weight:800; letter-spacing:.09em; color:""" + MUTED + """;
+                    margin-bottom:12px; }
+  .sb-event { padding:14px 0; border-bottom:1px solid """ + GRID + """; }
+  .sb-event:last-child { border-bottom:none; padding-bottom:0; }
+  .sb-event-names { font-size:17px; font-weight:600; color:""" + INK2 + """; margin-bottom:5px;
+                    line-height:1.4; }
+  .sb-event-ticker { font-size:13px; color:""" + MUTED + """; font-family:ui-monospace,monospace;
+                     margin-bottom:10px; }
+  .sb-launch-btn { background:""" + GOOD + """; color:#04140a; border:none; border-radius:6px;
+                   padding:7px 16px; font-weight:750; font-size:16px; cursor:pointer; }
+  .sb-launch-btn:hover { filter:brightness(1.09); }
+  .sb-running-lbl { font-size:16px; color:""" + GOOD + """; font-weight:700;
+                    text-decoration:none; cursor:pointer; opacity:.5; transition:opacity .15s; }
+  .sb-running-lbl:hover { opacity:.85; }
+  .sb-event.sb-nav-active { border-left:3px solid """ + GOOD + """; padding-left:10px;
+                             margin-left:-13px; background:rgba(38,194,129,.08);
+                             border-radius:0 6px 6px 0; }
+  .sb-event.sb-nav-active .sb-running-lbl { opacity:1; }
+  .sb-event.sb-nav-active .sb-event-names { color:""" + INK + """; }
+  .sb-empty { font-size:16px; color:""" + MUTED + """; padding:4px 0; }
+  .sb-manual-form { display:flex; flex-direction:column; gap:10px; }
+  .sb-manual-form input { width:100%; background:""" + INSET + """; color:""" + INK + """;
+                          border:1px solid """ + HAIR + """; border-radius:7px; padding:10px 12px;
+                          font-size:16px; outline:none; font-family:inherit; }
+  .sb-manual-form input:focus { border-color:""" + P1C + """; }
+  .sb-manual-btn { background:""" + P1C + """; color:#06121f; border:none; border-radius:7px;
+                   padding:10px 14px; font-weight:750; font-size:16px; cursor:pointer; width:100%; }
+  .sb-manual-btn:hover { filter:brightness(1.08); }
+  .add-status { color:""" + MUTED + """; font-size:15px; }
 
   .card { background:""" + SURFACE + """; border:1px solid """ + HAIR + """; border-radius:12px;
-          padding:20px 22px; margin-bottom:20px; }
+          padding:20px 22px; margin-bottom:20px; scroll-margin-top:24px; }
   .card-head { display:flex; align-items:center; gap:11px; }
   .live-dot { width:9px; height:9px; border-radius:50%; background:""" + GOOD + """;
               box-shadow:0 0 0 3px rgba(38,194,129,.20); }
@@ -757,37 +817,122 @@ app.index_string = """<!DOCTYPE html><html><head>{%metas%}<title>{%title%}</titl
   .tradelog td { padding:7px 14px; font-size:16px; border-bottom:1px solid """ + GRID + """; }
   .empty { color:""" + INK2 + """; padding:18px 4px; }
   h3 { font-size:16px; font-weight:700; color:""" + INK2 + """; letter-spacing:.05em; margin:26px 0 8px; }
-</style></head><body>{%app_entry%}<footer>{%config%}{%scripts%}{%renderer%}</footer></body></html>"""
+</style></head><body>{%app_entry%}<footer>{%config%}{%scripts%}{%renderer%}</footer>
+<script>
+// ── scroll-to on sidebar link click ──────────────────────────────────────────
+document.addEventListener('click', function(e) {
+  var a = e.target.closest('a[href^="#card-"]');
+  if (!a) return;
+  e.preventDefault();
+  var el = document.getElementById(a.getAttribute('href').slice(1));
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+});
+
+// ── highlight active card in sidebar ─────────────────────────────────────────
+(function() {
+  var activeId = null;
+
+  function applyActive() {
+    document.querySelectorAll('.sb-event').forEach(function(row) {
+      var a = row.querySelector('a.sb-running-lbl');
+      var isActive = a && a.getAttribute('href').slice(1) === activeId;
+      row.classList.toggle('sb-nav-active', isActive);
+    });
+  }
+
+  // Only cards in the top ~40% of the viewport count as "active"
+  var io = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (e.isIntersecting) activeId = e.target.id;
+    });
+    applyActive();
+  }, {threshold: 0.1, rootMargin: '0px 0px -55% 0px'});
+
+  function observeCards() {
+    document.querySelectorAll('.card[id^="card-"]').forEach(function(el) { io.observe(el); });
+  }
+
+  // Re-apply highlight whenever sidebar re-renders (Dash 2s tick)
+  function watchSidebar() {
+    var sb = document.getElementById('sidebar-events');
+    if (sb) new MutationObserver(applyActive).observe(sb, {childList:true, subtree:true});
+  }
+
+  // Re-observe cards whenever the main area re-renders
+  function watchMain() {
+    var main = document.getElementById('matches');
+    if (main) new MutationObserver(observeCards).observe(main, {childList:true, subtree:true});
+  }
+
+  // Wait for Dash to mount its React tree before initialising
+  var init = setInterval(function() {
+    if (document.getElementById('matches')) {
+      clearInterval(init);
+      observeCards();
+      watchSidebar();
+      watchMain();
+    }
+  }, 200);
+})();
+</script>
+</body></html>"""
 
 app.layout = html.Div(className="wrap", children=[
     dcc.Interval(id="tick", interval=REFRESH_MS, n_intervals=0),
-    html.Div([html.Span("Tennis Trading Monitor", className="brand"),
-              html.Span(id="status", className="status")], className="topbar"),
-    html.Div([
-        dcc.Input(id="add-ticker", placeholder="KXATPMATCH-…", debounce=True),
-        dcc.Input(id="add-budget", placeholder="budget", type="number", style={"width": "96px"}),
-        html.Button("Add match", id="add-btn", n_clicks=0, className="addbtn"),
-        html.Span(id="add-status", className="add-status"),
-    ], className="addbar"),
-    html.Div(id="matches"),
+    # ── fixed sidebar ─────────────────────────────────────────────────────────
+    html.Div(className="sidebar", children=[
+        # brand + status stats
+        html.Div(className="sb-section", children=[
+            html.Div("Tennis Trading Monitor", className="brand"),
+            html.Div(id="sb-mode"),
+            html.Div(id="sb-stats", className="sb-stat"),
+        ]),
+        # live Kalshi events
+        html.Div(className="sb-section", children=[
+            html.Div("LIVE ON KALSHI", className="sb-panel-title"),
+            html.Div(id="sidebar-events"),
+        ]),
+        # manual launch
+        html.Div(className="sb-section", children=[
+            html.Div("MANUAL", className="sb-panel-title"),
+            html.Div(className="sb-manual-form", children=[
+                dcc.Input(id="add-ticker", placeholder="KXATPMATCH-…", debounce=True),
+                dcc.Input(id="add-budget", placeholder="budget (optional)", type="text"),
+                html.Button("Launch", id="add-btn", n_clicks=0, className="sb-manual-btn"),
+                html.Div(id="add-status", className="add-status"),
+            ]),
+        ]),
+    ]),
+    # ── main cards ────────────────────────────────────────────────────────────
+    html.Div(id="matches", className="main"),
 ])
 
 
-@app.callback(Output("matches", "children"), Output("status", "children"),
+@app.callback(Output("matches", "children"), Output("sb-mode", "children"),
+              Output("sb-stats", "children"),
               Input("tick", "n_intervals"))
 def refresh(_):
+    import traceback
     matches = active_matches()
     now = datetime.datetime.now().strftime("%H:%M:%S")
+    cards = []
     if matches:
-        cards = [build_card(t, g) for t, g in matches.items()]
+        for t, g in matches.items():
+            try:
+                cards.append(build_card(t, g))
+            except Exception:
+                tb = traceback.format_exc()
+                cards.append(html.Div([
+                    html.Div(t, style={"fontWeight": 700, "marginBottom": "6px"}),
+                    html.Pre(tb, style={"fontSize": "12px", "color": CRIT,
+                                        "whiteSpace": "pre-wrap", "margin": 0}),
+                ], className="card"))
     else:
-        cards = [html.Div("No live matches. Add one above, or run "
-                          "python -m trade.trade_bot <event_ticker>.", className="empty")]
+        cards = [html.Div("No live matches — launch one from the sidebar.", className="empty")]
     total = sum((_num(g.iloc[-1], "budget_remaining") or 0) for g in matches.values())
-    mode = "DRY RUN" if cfg.DRY_RUN else "LIVE"
-    status = html.Span([html.Span(mode, className="mode"),
-                        f"{len(matches)} live · budget ${total:.2f} · updated {now}"])
-    return cards, status
+    mode  = html.Span("DRY RUN" if cfg.DRY_RUN else "LIVE", className="mode")
+    stats = f"{len(matches)} live · budget ${total:.2f}\nupdated {now}"
+    return cards, mode, stats
 
 
 @app.callback(Output("add-status", "children"), Input("add-btn", "n_clicks"),
@@ -797,8 +942,11 @@ def add_match(n, ticker, budget):
     if not ticker or not ticker.strip():
         return "enter an event ticker"
     cmd = [sys.executable, "-m", "trade.trade_bot", ticker.strip()]
-    if budget:
-        cmd += ["--budget", str(budget)]
+    if budget and str(budget).strip():
+        try:
+            cmd += ["--budget", str(float(budget))]
+        except ValueError:
+            return "invalid budget"
     try:
         subprocess.Popen(cmd, cwd=REPO_ROOT)
     except Exception as e:
@@ -821,12 +969,12 @@ def stop_match(clicks):
     return f"stop requested for {event} — process will exit within a second"
 
 
-# ── auto-launch ───────────────────────────────────────────────────────────────
+# ── live-event discovery (background thread, updates every AUTO_LAUNCH_POLL_SECS) ──
+from trade.kalshi_client import get_event_competitor_map
+
 def _running_events():
-    """Event tickers that already have a live bot, from the lock each bot touches
-    every tick. This is authoritative from the moment a bot starts — snapshot logs
-    are not, because a bot writes nothing until serve stats are ready, which used
-    to let the launcher spawn a duplicate."""
+    """Event tickers that already have a live bot, keyed by the lock file each bot
+    touches every tick. Authoritative from the moment a bot starts."""
     evs = set()
     for f in glob.glob(os.path.join(LOG_DIR, ".bot_*.lock")):
         if time.time() - os.path.getmtime(f) < cfg.BOT_LOCK_STALE_SECS:
@@ -834,35 +982,75 @@ def _running_events():
     return evs
 
 
-def _auto_launch_loop():
+# Module-level cache updated by _discovery_loop; read by the sidebar callback.
+_discovered: list = []            # [{"ticker": str, "p1": str, "p2": str}, ...]
+_discovered_lock = threading.Lock()
+_name_cache: dict = {}            # event_ticker -> {"p1": str, "p2": str}  (persists across cycles)
+
+
+def _discovery_loop():
     while True:
         try:
             live = discover_live_events(tuple(cfg.AUTO_LAUNCH_SERIES))
-            active = _running_events()
+            events = []
             for ev, _mid in live:
-                if len(active) >= cfg.AUTO_LAUNCH_MAX:
-                    break
-                if ev in active:
-                    continue
-                try:
-                    subprocess.Popen([sys.executable, "-m", "trade.trade_bot", ev], cwd=REPO_ROOT)
-                    # the bot takes .bot_<ev>.lock on startup and refuses to run
-                    # if one is already held, so a race here cannot double-trade
-                    active.add(ev)
-                    print(f"[auto] launched {ev}  ({len(live)} live in series)")
-                except Exception as e:
-                    print(f"[auto] spawn failed {ev}: {e}")
+                ev_map = get_event_competitor_map(ev) or {}
+                names  = [v["name"] for v in ev_map.values() if v.get("name")]
+                if len(names) >= 2:
+                    _name_cache[ev] = {"p1": names[0], "p2": names[1]}
+                n = _name_cache.get(ev, {"p1": "?", "p2": "?"})
+                events.append({"ticker": ev, "p1": n["p1"], "p2": n["p2"]})
+            with _discovered_lock:
+                _discovered[:] = events
         except Exception as e:
-            print(f"[auto] discovery error: {e}")
+            print(f"[discover] error: {e}")
         time.sleep(cfg.AUTO_LAUNCH_POLL_SECS)
+
+
+@app.callback(Output("sidebar-events", "children"), Input("tick", "n_intervals"))
+def refresh_sidebar(_):
+    with _discovered_lock:
+        events = list(_discovered)
+    running = _running_events()
+
+    if not events:
+        return html.Div("Scanning…", className="sb-empty")
+
+    rows = []
+    for ev in events:
+        ticker = ev["ticker"]
+        is_running = ticker in running
+        rows.append(html.Div([
+            html.Div(f"{ev['p1']} vs {ev['p2']}", className="sb-event-names"),
+            html.Div(ticker, className="sb-event-ticker"),
+            html.A("● running", href=f"#card-{ticker}", className="sb-running-lbl") if is_running else
+            html.Button("Launch", id={"type": "sidebar-launch", "event": ticker},
+                        n_clicks=0, className="sb-launch-btn"),
+        ], className="sb-event"))
+    return rows
+
+
+@app.callback(Output("add-status", "children", allow_duplicate=True),
+              Input({"type": "sidebar-launch", "event": ALL}, "n_clicks"),
+              prevent_initial_call=True)
+def sidebar_launch(clicks):
+    trig = ctx.triggered[0] if ctx.triggered else None
+    if not trig or not trig.get("value"):
+        return dash.no_update
+    ticker = ctx.triggered_id["event"]
+    try:
+        subprocess.Popen([sys.executable, "-m", "trade.trade_bot", ticker], cwd=REPO_ROOT)
+    except Exception as e:
+        return f"failed: {e}"
+    return f"launched {ticker} at {datetime.datetime.now():%H:%M:%S}"
 
 
 _DEBUG = True   # hot reload
 
 if __name__ == "__main__":
-    # Start the auto-launcher once, in the process that actually serves (not the
-    # Werkzeug reloader parent), so bots aren't spawned twice under hot reload.
-    if cfg.AUTO_LAUNCH and (os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not _DEBUG):
-        threading.Thread(target=_auto_launch_loop, daemon=True).start()
-        print(f"[auto] auto-launch ON for {cfg.AUTO_LAUNCH_SERIES} (max {cfg.AUTO_LAUNCH_MAX})")
+    # Start discovery thread once, in the process that actually serves requests
+    # (not the Werkzeug reloader parent), so we don't double-scan under hot reload.
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not _DEBUG:
+        threading.Thread(target=_discovery_loop, daemon=True).start()
+        print(f"[discover] scanning {cfg.AUTO_LAUNCH_SERIES} every {cfg.AUTO_LAUNCH_POLL_SECS}s")
     app.run(host="127.0.0.1", port=8050, debug=_DEBUG)

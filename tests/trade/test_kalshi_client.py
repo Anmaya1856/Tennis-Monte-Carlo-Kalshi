@@ -109,13 +109,23 @@ def _milestone_response(details):
     return {"live_data": {"details": details}}
 
 
-def test_fetch_milestone_returns_none_when_not_live():
-    dead = dict(_MILESTONE_DETAILS, status="complete")
+def test_fetch_milestone_returns_none_on_http_error():
     with patch("trade.kalshi_client.requests.get") as mock_get:
-        mock_get.return_value.ok = True
-        mock_get.return_value.json.return_value = _milestone_response(dead)
+        mock_get.return_value.ok = False
         from trade.kalshi_client import fetch_milestone
         assert fetch_milestone("mid-123") is None
+
+
+def test_fetch_milestone_returns_details_when_closed():
+    closed = dict(_MILESTONE_DETAILS, status="closed", match_status="ended")
+    with patch("trade.kalshi_client.requests.get") as mock_get:
+        mock_get.return_value.ok = True
+        mock_get.return_value.json.return_value = _milestone_response(closed)
+        from trade.kalshi_client import fetch_milestone
+        result = fetch_milestone("mid-123")
+        assert result is not None
+        assert result["status"] == "closed"
+        assert result["match_status"] == "ended"
 
 
 def test_fetch_milestone_returns_details_when_live():

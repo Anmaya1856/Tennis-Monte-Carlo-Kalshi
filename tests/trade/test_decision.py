@@ -83,21 +83,26 @@ def test_on_serve_respects_config():
 
 # ── fixed-size entry ──────────────────────────────────────────────────────────
 
+def _ample():
+    """A budget that always covers one trade, whatever the configured size is."""
+    return float(cfg.CONTRACTS_PER_TRADE) * 2.0
+
+
 def test_buys_exactly_the_configured_size():
-    r = compute_entry(0.30, 5.0, TICKER)
+    r = compute_entry(0.30, _ample(), TICKER)
     assert r["count"] == float(cfg.CONTRACTS_PER_TRADE)
     assert r["entry_price"] == 0.30
     assert r["price_cents"] == 30
 
 def test_size_is_the_same_at_every_price():
-    sizes = {compute_entry(p, 100.0, TICKER)["count"]
+    sizes = {compute_entry(p, _ample() * 20, TICKER)["count"]
              for p in (0.05, 0.22, 0.50, 0.83, 0.95)}
     assert sizes == {float(cfg.CONTRACTS_PER_TRADE)}
 
 def test_no_edge_test_it_always_trades_when_affordable():
     """Kelly is gone: a price the model would call terrible still trades."""
-    assert compute_entry(0.99, 100.0, TICKER) is not None
-    assert compute_entry(0.01, 100.0, TICKER) is not None
+    assert compute_entry(0.99, _ample() * 20, TICKER) is not None
+    assert compute_entry(0.01, _ample() * 20, TICKER) is not None
 
 def test_skips_when_the_budget_cannot_cover_stake_plus_fee():
     from trade.kalshi_client import fill_fee
@@ -109,12 +114,13 @@ def test_skips_when_the_budget_cannot_cover_stake_plus_fee():
 
 def test_stake_plus_fee_fits_the_budget():
     from trade.kalshi_client import fill_fee as taker_fee
+    budget = _ample()
     for price in (0.05, 0.22, 0.50, 0.83, 0.95):
-        r = compute_entry(price, 5.0, TICKER)
+        r = compute_entry(price, budget, TICKER)
         if r is None:
             continue
         cost = r["count"] * price
-        assert cost + taker_fee(r["count"], price, TICKER) <= 5.0 + 1e-9
+        assert cost + taker_fee(r["count"], price, TICKER) <= budget + 1e-9
 
 def test_degenerate_prices_are_rejected():
     assert compute_entry(0.0, 5.0, TICKER) is None

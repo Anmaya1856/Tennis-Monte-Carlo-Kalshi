@@ -467,8 +467,9 @@ def estimate_win_prob_market(pA0, pB0, wonA, playedA, wonB, playedB,
     game_state = _parse_game_score(game_score_str, is_tiebreak=in_tiebreak)
     set_games = current_set_games if current_set_games is not None else (0, 0)
 
-    pA = np.random.beta(N * pA0 + wonA + 0.5, N * (1 - pA0) + (playedA - wonA) + 0.5, n)
-    pB = np.random.beta(N * pB0 + wonB + 0.5, N * (1 - pB0) + (playedB - wonB) + 0.5, n)
+    rng = np.random.default_rng(cfg.RANDOM_SEED)
+    pA = rng.beta(N * pA0 + wonA + 0.5, N * (1 - pA0) + (playedA - wonA) + 0.5, n)
+    pB = rng.beta(N * pB0 + wonB + 0.5, N * (1 - pB0) + (playedB - wonB) + 0.5, n)
 
     probs = win_probs(pA, pB, sets_won, set_games, in_tiebreak, game_state, p1_serves, best_of)
     out = {k: float(np.mean(probs[k])) for k in ("match", "set", "game")}

@@ -390,7 +390,8 @@ def discover_live_events(series=("KXATPMATCH", "KXATPCHALLENGERMATCH"), lookback
                     continue
             except ValueError:
                 pass
-        if fetch_milestone(m["id"]) is not None:     # authoritative live check
+        details = fetch_milestone(m["id"])
+        if details is not None and details.get("status") == "live":
             out.append((ev, m["id"]))
     return out
 
@@ -410,14 +411,13 @@ def fetch_best_of(milestone_id):
 
 
 def fetch_milestone(milestone_id):
-    """GET /live_data/milestone/{id} (public). Returns details dict or None if not live."""
+    """GET /live_data/milestone/{id} (public). Returns details dict or None on network error."""
     url = f"{cfg.KALSHI_BASE}/trade-api/v2/live_data/milestone/{milestone_id}"
     try:
         resp = requests.get(url, timeout=5)
         if not resp.ok:
             return None
-        details = resp.json()["live_data"]["details"]
-        return details if details.get("status") == "live" else None
+        return resp.json()["live_data"]["details"]
     except Exception:
         return None
 

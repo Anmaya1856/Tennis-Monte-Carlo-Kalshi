@@ -87,6 +87,19 @@ def _append(filename, cols, row):
         writer.writerow(row)
 
 
+def log_outcome(p1_ticker, match_status, winner_name):
+    """Append a single row to the snapshot CSV recording how the match ended.
+    p1_ticker must be a player-level ticker (e.g. KXATPMATCH-26AUG31PIROBR-PIR)
+    so _suffix() strips the player segment and appends to the correct event file."""
+    _append("match_snapshots.csv", _SNAPSHOT_COLS, {
+        col: "" for col in _SNAPSHOT_COLS
+    } | {
+        "timestamp":     _now_str(),
+        "ticker":        p1_ticker,
+        "match_outcome": f"{match_status}:{winner_name or 'unknown'}",
+    })
+
+
 def log_trade(ticker, p1_name, p2_name, direction, event, entry_price, exit_price,
               mc_prob_at_entry, bet_amount, fee, pnl, budget_remaining):
     _append("trade_log.csv", _TRADE_COLS, {
