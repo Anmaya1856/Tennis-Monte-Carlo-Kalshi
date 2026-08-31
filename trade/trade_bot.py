@@ -362,7 +362,8 @@ def _run_sim(mc, cached, kalshi_state, score_key, p1_ask, p1_bid, p2_ask, p2_bid
     _store.update_mc_prob(key, mc_prob, game_prob, probs["cond"])
     _store.record_sim(key, score_key)
 
-    _store.update_divergence(key, mc_prob, (p1_ask + p1_bid) / 2)
+    if p1_ask is not None and p1_bid is not None:
+        _store.update_divergence(key, mc_prob, (p1_ask + p1_bid) / 2)
     cached["p1_name"] = p1_name
     cached["p2_name"] = p2_name
 
@@ -405,17 +406,18 @@ def _log_and_print(mc, cached, kalshi_state, sim, p1_ask, p1_bid, p2_ask, p2_bid
         queue_ahead=_queue_ahead.get(key),
     )
 
-    server_name = p1_name if kalshi_state["p1_serves"] else p2_name
-    mkt = {"pa0": cached["pa0"], "pb0": cached["pb0"], "pa_blend": probs["pa_blend"],
-           "pb_blend": probs["pb_blend"], "wt_a": probs["wt_a"], "wt_b": probs["wt_b"]}
-    _print_poll(cached, p1_name, p2_name,
-                kalshi_state["score_str"], kalshi_state["game_score_str"],
-                server_name, sim["p1_stats"], sim["p2_stats"], mkt,
-                sim["mc_prob"], sim["game_prob"], sim["set_prob"],
-                p1_ask, p1_bid, p2_ask, p2_bid, best_of,
-                ms, report=sim["report"],
-                vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
-                cond=probs["cond"])
+    if None not in (p1_ask, p1_bid, p2_ask, p2_bid):
+        server_name = p1_name if kalshi_state["p1_serves"] else p2_name
+        mkt = {"pa0": cached["pa0"], "pb0": cached["pb0"], "pa_blend": probs["pa_blend"],
+               "pb_blend": probs["pb_blend"], "wt_a": probs["wt_a"], "wt_b": probs["wt_b"]}
+        _print_poll(cached, p1_name, p2_name,
+                    kalshi_state["score_str"], kalshi_state["game_score_str"],
+                    server_name, sim["p1_stats"], sim["p2_stats"], mkt,
+                    sim["mc_prob"], sim["game_prob"], sim["set_prob"],
+                    p1_ask, p1_bid, p2_ask, p2_bid, best_of,
+                    ms, report=sim["report"],
+                    vol_point=probs["vol"]["point"], vol_game=probs["vol"]["game"],
+                    cond=probs["cond"])
 
 
 def _book_fill(key, cached, p, qty, cost, fee):
@@ -722,7 +724,7 @@ def _tick(mc):
         # Match is over in some form (ended, retired, walkover, abandoned, …)
         winner_id    = details.get("winner")
         p1_won       = (winner_id == cached["p1_competitor_id"])
-        winner_name  = cached["p1_name"] if p1_won else cached["p2_name"]
+        winner_name  = (cached["p1_name"] or cached["p1_name_kalshi"]) if p1_won else (cached["p2_name"] or cached["p2_name_kalshi"])
         winner_ticker = cached["p1_ticker"] if p1_won else cached["p2_ticker"]
         print(f"[done] {event_ticker}: status={status!r} match_status={match_status!r} "
               f"— winner {winner_name}")
@@ -762,9 +764,9 @@ def _tick(mc):
 
     p1_ask, p1_bid = get_best_ask_bid(cached["p1_ticker"])
     p2_ask, p2_bid = get_best_ask_bid(cached["p2_ticker"])
-    if None in (p1_ask, p1_bid, p2_ask, p2_bid):
+    orderbook_ok = None not in (p1_ask, p1_bid, p2_ask, p2_bid)
+    if not orderbook_ok:
         print(f"[poll] orderbook unavailable for {event_ticker}")
-        return
 
     ms = _store.get_or_create(key)
 
@@ -782,22 +784,6 @@ def _tick(mc):
             sim = _run_sim(mc, cached, kalshi_state, score_key,
                            p1_ask, p1_bid, p2_ask, p2_bid)
             _sim_attempts[key] = {"score_key": score_key, "ts": time.time()}
-
-    # Which side of the book we trade on. MAKER rests: we buy at the bid and sell
-    # at the ask. TAKER crosses: buy the ask, sell the bid.
-    entry_px = (p1_bid, p2_bid) if cfg.MAKER_MODE else (p1_ask, p2_ask)
-    exit_px  = (p1_ask, p2_ask) if cfg.MAKER_MODE else (p1_bid, p2_bid)
-
-    # Resolve any resting order first: book what filled, cancel what is stale.
-    # Until this runs, a maker order is not a position.
-    _resolve_pending(key, cached, kalshi_state,
-                     {"p1": exit_px[0], "p2": exit_px[1]})
-
-    # Square off next: the position is closed the moment its game ends, which
-    # frees the budget to roll straight onto the new receiver in the same tick.
-    # Skipped while an exit is already working, or we would double-sell.
-    if _store.has_position(key) and not _store.has_pending(key):
-        _check_exit(key, cached, kalshi_state, *exit_px)
 
     # Then take the new game's position. Entries need a freshly computed
     # game prob — a cached one belongs to the game that just finished.
@@ -826,19 +812,38 @@ def _tick(mc):
             allowed = False
         _entry_gate[key] = {"game_id": now_game_id, "allowed": allowed}
 
-    if (not _store.has_position(key)
-            and not _store.has_pending(key)
-            and sim is not None
-            and on_serve(serve_score, kalshi_state["p1_serves"])
-            and _entry_gate.get(key, {}).get("allowed", False)
-            and not _store.is_budget_exhausted(key)):
-        # Re-fetch prices: the sim takes a moment and the market may have moved
-        # since the tick started.
-        a1, b1 = get_best_ask_bid(cached["p1_ticker"])
-        a2, b2 = get_best_ask_bid(cached["p2_ticker"])
-        px1, px2 = (b1, b2) if cfg.MAKER_MODE else (a1, a2)
-        if px1 is not None and px2 is not None:
-            _check_entry(key, cached, kalshi_state, px1, px2)
+    # Trading (entry/exit/pending) requires live prices. Sim and logging continue
+    # even when the orderbook is temporarily unavailable.
+    if orderbook_ok:
+        # Which side of the book we trade on. MAKER rests: we buy at the bid and sell
+        # at the ask. TAKER crosses: buy the ask, sell the bid.
+        entry_px = (p1_bid, p2_bid) if cfg.MAKER_MODE else (p1_ask, p2_ask)
+        exit_px  = (p1_ask, p2_ask) if cfg.MAKER_MODE else (p1_bid, p2_bid)
+
+        # Resolve any resting order first: book what filled, cancel what is stale.
+        # Until this runs, a maker order is not a position.
+        _resolve_pending(key, cached, kalshi_state,
+                         {"p1": exit_px[0], "p2": exit_px[1]})
+
+        # Square off next: the position is closed the moment its game ends, which
+        # frees the budget to roll straight onto the new receiver in the same tick.
+        # Skipped while an exit is already working, or we would double-sell.
+        if _store.has_position(key) and not _store.has_pending(key):
+            _check_exit(key, cached, kalshi_state, *exit_px)
+
+        if (not _store.has_position(key)
+                and not _store.has_pending(key)
+                and sim is not None
+                and on_serve(serve_score, kalshi_state["p1_serves"])
+                and _entry_gate.get(key, {}).get("allowed", False)
+                and not _store.is_budget_exhausted(key)):
+            # Re-fetch prices: the sim takes a moment and the market may have moved
+            # since the tick started.
+            a1, b1 = get_best_ask_bid(cached["p1_ticker"])
+            a2, b2 = get_best_ask_bid(cached["p2_ticker"])
+            px1, px2 = (b1, b2) if cfg.MAKER_MODE else (a1, a2)
+            if px1 is not None and px2 is not None:
+                _check_entry(key, cached, kalshi_state, px1, px2)
 
     # Record last, so the snapshot reflects the position we ended the tick with.
     if sim is not None:
