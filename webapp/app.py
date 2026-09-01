@@ -17,14 +17,15 @@ from dash import Dash, dcc, html, ctx, Input, Output, State, ALL
 import trade.config as cfg
 import trade.swing_thresholds as _sw_thr
 from trade.decision import on_serve
-from trade.kalshi_client import discover_live_events
+from trade.kalshi_client import discover_live_events, get_top_of_book
 from trade.exact import (win_probs, win_prob_forward, weighted_quantile,
                          _parse_match_state, _parse_game_score, _parse_score, _is_set_complete)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(REPO_ROOT, cfg.LOG_DIR)
 ACTIVE_WINDOW_SECS = 120
-REFRESH_MS = 2000
+FINISHED_WINDOW_SECS = 30   # finished matches stay visible briefly then drop off
+REFRESH_MS = 1000
 # logs store UTC wall-clock; shift to local time for display
 _LOCAL_OFFSET = datetime.datetime.now().astimezone().utcoffset() or datetime.timedelta(0)
 
@@ -73,7 +74,13 @@ def active_matches():
             continue
         for ticker, g in df.groupby("ticker"):
             ts = _parse_ts(g.iloc[-1].get("timestamp"))
-            if ts is None or (now - ts).total_seconds() > ACTIVE_WINDOW_SECS:
+            if ts is None:
+                continue
+            is_done = "match_outcome" in df.columns and bool(
+                str(g.iloc[-1].get("match_outcome", "")).strip()
+            )
+            window = FINISHED_WINDOW_SECS if is_done else ACTIVE_WINDOW_SECS
+            if (now - ts).total_seconds() > window:
                 continue
             if ticker not in best or ts > best[ticker][0]:
                 best[ticker] = (ts, g.reset_index(drop=True))
@@ -98,7 +105,7 @@ def match_trades(event_ticker):
 def branch_probs(last):
     """P1's 4 conditional match probs (win/lose current game/set). Prefer logged
     cond_*; else recompute from logged blended point probs (works on old logs)."""
-    keys = ("win_game", "lose_game", "win_set", "lose_set")
+    keys = ("win_point", "lose_point", "win_game", "lose_game", "win_set", "lose_set")
     logged = {k: _num(last, f"cond_{k}") for k in keys}
     if all(v is not None for v in logged.values()):
         return logged
@@ -203,17 +210,19 @@ def service_stats(last):
                      html.Div([_svc_row(*r) for r in rows], className="svc-stats")])
 
 
-def player_col(nm, color, match, bid, ask, game, sett, br_game, br_set, badge_text=None):
+def player_col(nm, color, match, bid, ask, game, sett, br_point, br_game, br_set, badge_text=None,
+               bid_size=None, ask_size=None):
     badge = html.Span(badge_text, className="badge") if badge_text else None
     def gsm(label, val, align):
         return html.Div([html.Div(label, className="gsm-label"),
                          html.Div(_pct(val, 1), className="gsm-val")],
                         className="gsm-cell", style={"textAlign": align})
 
-    def book_tile(label, price, sub):
+    def book_tile(label, price, sub, size=None):
+        size_text = f"{size:,} cts" if size is not None else sub
         return html.Div([html.Div(label, className="bk-label"),
                          html.Div(_price(price), className="bk-val"),
-                         html.Div(sub, className="bk-sub")], className="bk-tile")
+                         html.Div(size_text, className="bk-sub")], className="bk-tile")
 
     return html.Div([
         html.Div([html.Span(className="dot", style={"background": color}),
@@ -222,9 +231,11 @@ def player_col(nm, color, match, bid, ask, game, sett, br_game, br_set, badge_te
         html.Div([gsm("GAME", game, "left"), gsm("SET", sett, "center"),
                   gsm("MATCH", match, "right")], className="gsm-grid"),
         html.Div("MARKET  ·  KALSHI ORDER BOOK", className="grp-label"),
-        html.Div([book_tile("BID", bid, "sell YES here"),
-                  book_tile("ASK", ask, "buy YES here")], className="bk-grid"),
+        html.Div([book_tile("BID", bid, "sell YES here", bid_size),
+                  book_tile("ASK", ask, "buy YES here", ask_size)], className="bk-grid"),
         html.Div([
+            html.Div("if this point …", className="rb-label"),
+            range_bar(*br_point, color),
             html.Div("if this game …", className="rb-label"),
             range_bar(*br_game, color),
             html.Div("if this set …", className="rb-label"),
@@ -442,11 +453,57 @@ def scoreboard(p1full, p2full, last):
                     className="scoreboard")
 
 
-def build_card(ticker, g):
+def _build_finished_card(ticker, event, p1full, p2full, p1, p2, match_outcome):
+    """Compact card shown for 30 s after a match ends."""
+    parts = match_outcome.split(":", 1)
+    status_str  = parts[0].replace("_", " ").title() if parts else match_outcome
+    winner_name = parts[1] if len(parts) > 1 else "unknown"
+
+    trades_df = match_trades(event)
+    total_pnl = 0.0
+    if not trades_df.empty and "pnl" in trades_df.columns:
+        total_pnl = pd.to_numeric(trades_df["pnl"], errors="coerce").fillna(0).sum()
+    pnl_color = GOOD if total_pnl >= 0 else CRIT
+
+    return html.Div([
+        html.Div([
+            html.Span("✓ FINISHED", className="pill",
+                      style={"background": INSET, "color": MUTED}),
+            html.Span(f"{p1full}  vs  {p2full}", className="match-title",
+                      style={"opacity": "0.7"}),
+        ], className="card-head"),
+        html.Div([
+            html.Span(f"Winner: {winner_name}",
+                      style={"fontWeight": 700, "fontSize": "15px"}),
+            html.Span(f"  ·  {status_str}",
+                      style={"color": MUTED, "fontSize": "14px"}),
+            html.Span(f"  ·  P&L: ${total_pnl:+.2f}",
+                      style={"color": pnl_color, "fontWeight": 700, "fontSize": "15px"}),
+        ], style={"padding": "12px 4px"}),
+        build_tradelog(event, p1, p2),
+    ], className="card", id=f"card-{event}",
+       style={"opacity": "0.65", "borderColor": GRID})
+
+
+def build_card(ticker, g, p1_book=None, p2_book=None):
     last = g.iloc[-1]
     event = ticker.rsplit("-", 1)[0]
-    p1full, p2full = last.get("p1_name", "P1"), last.get("p2_name", "P2")
+
+    # The outcome row has blank names; look back at the last row that has real names.
+    if "p1_name" in g.columns:
+        named = g[g["p1_name"].notna() & (g["p1_name"].astype(str).str.strip() != "")]
+    else:
+        named = pd.DataFrame()
+    name_row = named.iloc[-1] if not named.empty else last
+    p1full = _str(name_row, "p1_name") or "P1"
+    p2full = _str(name_row, "p2_name") or "P2"
     p1, p2 = _last_name(p1full), _last_name(p2full)
+
+    # Detect finished match (log_outcome writes match_outcome = "status:winner_name").
+    match_outcome = _str(last, "match_outcome")
+    if match_outcome:
+        return _build_finished_card(ticker, event, p1full, p2full, p1, p2, match_outcome)
+
     best_of = int(_num(last, "best_of") or 3)
 
     mc = _num(last, "mc_prob_p1")
@@ -455,13 +512,20 @@ def build_card(ticker, g):
     p1a, p1b = _num(last, "kalshi_p1_ask"), _num(last, "kalshi_p1_bid")
     p2a, p2b = _num(last, "kalshi_p2_ask"), _num(last, "kalshi_p2_bid")
 
+    p1_book = p1_book or {}
+    p2_book = p2_book or {}
+
     b = branch_probs(last)
-    p1_bg = p2_bg = p1_bs = p2_bs = None
+    p1_bp = p2_bp = p1_bg = p2_bg = p1_bs = p2_bs = None
     if b and mc is not None:
+        q = _num(last, "mc_game_prob_p1")  # P1's game win probability
+        cur_p = q * b["win_point"] + (1 - q) * b["lose_point"] if q is not None else mc
         cur_g = gm * b["win_game"] + (1 - gm) * b["lose_game"] if gm is not None else mc
         cur_s = st * b["win_set"] + (1 - st) * b["lose_set"] if st is not None else mc
+        p1_bp = (b["lose_point"], b["win_point"], cur_p)
         p1_bg = (b["lose_game"], b["win_game"], cur_g)
         p1_bs = (b["lose_set"], b["win_set"], cur_s)
+        p2_bp = (1 - b["win_point"], 1 - b["lose_point"], 1 - cur_p)
         p2_bg = (1 - b["win_game"], 1 - b["lose_game"], 1 - cur_g)
         p2_bs = (1 - b["win_set"], 1 - b["lose_set"], 1 - cur_s)
 
@@ -490,10 +554,12 @@ def build_card(ticker, g):
     p2_badge = "RECEIVER" if (srv == "p1" and live) else None
 
     cols = html.Div([
-        player_col(p1, P1C, mc, p1b, p1a, gm, st, p1_bg, p1_bs, p1_badge),
+        player_col(p1, P1C, mc, p1b, p1a, gm, st, p1_bp, p1_bg, p1_bs, p1_badge,
+                   bid_size=p1_book.get("bid_size"), ask_size=p1_book.get("ask_size")),
         player_col(p2, P2C, None if mc is None else 1 - mc, p2b, p2a,
                    None if gm is None else 1 - gm, None if st is None else 1 - st,
-                   p2_bg, p2_bs, p2_badge),
+                   p2_bp, p2_bg, p2_bs, p2_badge,
+                   bid_size=p2_book.get("bid_size"), ask_size=p2_book.get("ask_size")),
     ], className="pcol-grid")
 
     # footer — what we hold, what it's worth, and what we can still spend
@@ -560,8 +626,11 @@ def build_card(ticker, g):
     ], className="card-foot")
 
     fwd = compute_forward(last)
-    charts = dcc.Graph(figure=fan_fig(g, p1, fwd),
-                       config={"displayModeBar": False}, className="chart")
+    try:
+        charts = dcc.Graph(figure=fan_fig(g, p1, fwd),
+                           config={"displayModeBar": False}, className="chart")
+    except Exception:
+        charts = html.Div("chart unavailable", style={"color": MUTED, "padding": "12px 0"})
 
     return html.Div([header, ids, score, cols,
                      serve_probs(last, p1, p2), service_stats(last),
@@ -913,13 +982,59 @@ app.layout = html.Div(className="wrap", children=[
               Input("tick", "n_intervals"))
 def refresh(_):
     import traceback
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        return _refresh_inner()
+    except Exception:
+        tb = traceback.format_exc()
+        print(f"[refresh] CRASH:\n{tb}")
+        err = [html.Div(["Callback error — see console", html.Pre(tb, style={"color": CRIT, "fontSize": "12px", "whiteSpace": "pre-wrap"})], className="card")]
+        return err, html.Span("ERROR", className="mode"), "callback crashed"
+
+
+def _refresh_inner():
+    import traceback
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     matches = active_matches()
     now = datetime.datetime.now().strftime("%H:%M:%S")
+
+    # Pre-fetch all orderbooks in parallel so serial REST calls don't block the callback.
+    # Collect every ticker we need, fire them all at once, then pass the results to build_card.
+    ticker_to_p2 = {}
+    all_tickers = set()
+    for snap_ticker, g in matches.items():
+        last = g.iloc[-1]
+        all_tickers.add(snap_ticker)
+        p2_t = _str(last, "p2_ticker") or None
+        if p2_t:
+            all_tickers.add(p2_t)
+            ticker_to_p2[snap_ticker] = p2_t
+
+    books = {}
+    if all_tickers:
+        try:
+            ex = ThreadPoolExecutor(max_workers=len(all_tickers))
+            futures = {ex.submit(get_top_of_book, t): t for t in all_tickers}
+            try:
+                for f in as_completed(futures, timeout=4):
+                    try:
+                        books[futures[f]] = f.result()
+                    except Exception:
+                        pass
+            except Exception:
+                pass  # timeout — books stays partial/empty, callback continues
+            finally:
+                ex.shutdown(wait=False)  # don't block; straggler threads are daemon-safe
+        except Exception:
+            pass
+
     cards = []
     if matches:
         for t, g in matches.items():
             try:
-                cards.append(build_card(t, g))
+                cards.append(build_card(t, g,
+                                        p1_book=books.get(t),
+                                        p2_book=books.get(ticker_to_p2.get(t))))
             except Exception:
                 tb = traceback.format_exc()
                 cards.append(html.Div([
@@ -972,6 +1087,25 @@ def stop_match(clicks):
 # ── live-event discovery (background thread, updates every AUTO_LAUNCH_POLL_SECS) ──
 from trade.kalshi_client import get_event_competitor_map
 
+def _finished_events():
+    """Event tickers where a match_outcome row was written in the last hour."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    finished = set()
+    for f in glob.glob(os.path.join(LOG_DIR, "match_snapshots_*.csv")):
+        if now.timestamp() - os.path.getmtime(f) > 3600:
+            continue
+        try:
+            df = pd.read_csv(f)
+        except Exception:
+            continue
+        if df.empty or "match_outcome" not in df.columns:
+            continue
+        done = df[df["match_outcome"].notna() & (df["match_outcome"].astype(str).str.strip() != "")]
+        for t in done["ticker"].unique():
+            finished.add(t.rsplit("-", 1)[0] if "-" in str(t) else str(t))
+    return finished
+
+
 def _running_events():
     """Event tickers that already have a live bot, keyed by the lock file each bot
     touches every tick. Authoritative from the moment a bot starts."""
@@ -1011,7 +1145,8 @@ def _discovery_loop():
 def refresh_sidebar(_):
     with _discovered_lock:
         events = list(_discovered)
-    running = _running_events()
+    running  = _running_events()
+    finished = _finished_events()
 
     if not events:
         return html.Div("Scanning…", className="sb-empty")
@@ -1019,13 +1154,20 @@ def refresh_sidebar(_):
     rows = []
     for ev in events:
         ticker = ev["ticker"]
-        is_running = ticker in running
+        is_running  = ticker in running
+        is_finished = ticker in finished
+        if is_finished:
+            action = html.Span("✓ Finished", style={"color": MUTED, "fontSize": "14px",
+                                                     "fontWeight": 600})
+        elif is_running:
+            action = html.A("● running", href=f"#card-{ticker}", className="sb-running-lbl")
+        else:
+            action = html.Button("Launch", id={"type": "sidebar-launch", "event": ticker},
+                                 n_clicks=0, className="sb-launch-btn")
         rows.append(html.Div([
             html.Div(f"{ev['p1']} vs {ev['p2']}", className="sb-event-names"),
             html.Div(ticker, className="sb-event-ticker"),
-            html.A("● running", href=f"#card-{ticker}", className="sb-running-lbl") if is_running else
-            html.Button("Launch", id={"type": "sidebar-launch", "event": ticker},
-                        n_clicks=0, className="sb-launch-btn"),
+            action,
         ], className="sb-event"))
     return rows
 

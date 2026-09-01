@@ -96,6 +96,30 @@ def get_best_ask_bid(ticker):
     return ask, bid
 
 
+def get_top_of_book(ticker):
+    """Top-of-book prices and sizes. Returns dict with "ask", "ask_size", "bid", "bid_size";
+    any field is None when that side of the book is empty or the call fails."""
+    ob_data = _fetch_orderbook(ticker)
+    if ob_data is None:
+        return {"ask": None, "ask_size": None, "bid": None, "bid_size": None}
+    ob       = ob_data.get("orderbook_fp", {})
+    no_bids  = ob.get("no_dollars",  [])
+    yes_bids = ob.get("yes_dollars", [])
+    if yes_bids:
+        best_yes  = max(yes_bids, key=lambda x: float(x[0]))
+        bid_p     = float(best_yes[0])
+        bid, bid_size = bid_p, round(float(best_yes[1]))
+    else:
+        bid, bid_size = None, None
+    if no_bids:
+        best_no   = max(no_bids,  key=lambda x: float(x[0]))
+        no_p      = float(best_no[0])
+        ask, ask_size = 1 - no_p, round(float(best_no[1]))
+    else:
+        ask, ask_size = None, None
+    return {"ask": ask, "ask_size": ask_size, "bid": bid, "bid_size": bid_size}
+
+
 def taker_fee(count, price):
     """Kalshi taker fee: roundup(0.07 * C * P * (1-P)), rounded UP to the next cent.
 
@@ -563,3 +587,12 @@ def serve_stats_ready(stats):
     if den is None or den < 2:
         return False
     return stats.get("win_first_num") is not None and stats.get("win_second_num") is not None
+
+
+# If orderbook_ws.py is present, use its push-based version of get_best_ask_bid
+# instead of the REST-polling version defined above. Delete that file to revert.
+try:
+    from trade.orderbook_ws import get_best_ask_bid, get_top_of_book  # noqa: F811
+    print("[kalshi] orderbook via WebSocket (delete trade/orderbook_ws.py to revert to REST)")
+except ImportError:
+    pass

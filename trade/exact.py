@@ -260,6 +260,8 @@ def win_probs(pA, pB, sets_won, set_games, in_tiebreak, game_state, p1_serves, b
         g_l = 1 - game_win_prob(pB, b + 1, a)
     vol_game = np.sqrt(game_p1 * (1 - game_p1)) * np.abs(cwg - clg)
     vol_point = np.sqrt(q * (1 - q)) * np.abs(g_w - g_l) * np.abs(cwg - clg)
+    cond["win_point"]  = g_w * cwg + (1 - g_w) * clg
+    cond["lose_point"] = g_l * cwg + (1 - g_l) * clg
 
     # final scoreline distribution
     sl_memo = {}

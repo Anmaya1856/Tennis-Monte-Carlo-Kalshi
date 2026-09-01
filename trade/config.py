@@ -1,5 +1,5 @@
 # Trading parameters
-MATCH_BUDGET      = 20.00
+MATCH_BUDGET      = 30.00
 # Receiver-roll strategy: while the current set is within MAX_GAME_DIFF games,
 # hold the player about to RECEIVE and square off when the game ends. No stop
 # loss, no trailing lock, no profit target — the game boundary is the only exit.
@@ -78,7 +78,8 @@ LOG_DIR = "data/logs"
 # Discovery: the monitor scans these Kalshi series and lists live matches in the
 # sidebar so you can choose which to launch manually.
 AUTO_LAUNCH_SERIES = ("KXATPMATCH",
-                       "KXATPCHALLENGERMATCH"
+                       "KXATPCHALLENGERMATCH",
+                       "KXWTAMATCH"
                        )
 AUTO_LAUNCH_POLL_SECS = 600    # how often to scan Kalshi for newly-live matches
 

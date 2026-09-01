@@ -7,7 +7,7 @@ Set MATCH_CONFIG in config.py with at least one entry before running.
 Usage:
     python -m trade.trade_bot
 """
-import argparse, datetime, os, sys, time
+import argparse, datetime, os, sys, time, traceback
 
 import trade.config as cfg
 from trade.kalshi_client import (get_best_ask_bid, place_order, close_position,
@@ -27,6 +27,7 @@ from trade                 import logger
 # State is keyed by event_ticker: one budget and one position per match,
 # even though each match has two tradeable markets (one per player).
 _store = MatchStateStore()
+_ob_warn_ts: dict = {}   # event_ticker -> last time "orderbook unavailable" was printed
 
 # event_ticker → {"p1_ticker", "p2_ticker", "p1_competitor_id", "p1_name_kalshi",
 #                 "milestone_id", "p1_name", "p2_name", "best_of"}
@@ -398,6 +399,7 @@ def _log_and_print(mc, cached, kalshi_state, sim, p1_ask, p1_bid, p2_ask, p2_bid
         sim["mc_prob"], sim["set_prob"], sim["game_prob"],
         p1_ask, p1_bid, p2_ask, p2_bid,
         ms, pos_side, pos_value,
+        p2_ticker=cached["p2_ticker"],
         p1_kstats=kalshi_state.get("p1_kstats"), p2_kstats=kalshi_state.get("p2_kstats"),
         prematch_price=cached["prematch_price"], pa0=cached["pa0"], pb0=cached["pb0"],
         pa_blend=probs["pa_blend"], pb_blend=probs["pb_blend"],
@@ -766,7 +768,10 @@ def _tick(mc):
     p2_ask, p2_bid = get_best_ask_bid(cached["p2_ticker"])
     orderbook_ok = None not in (p1_ask, p1_bid, p2_ask, p2_bid)
     if not orderbook_ok:
-        print(f"[poll] orderbook unavailable for {event_ticker}")
+        now = time.time()
+        if now - _ob_warn_ts.get(event_ticker, 0) > 60:
+            print(f"[poll] orderbook unavailable for {event_ticker}")
+            _ob_warn_ts[event_ticker] = now
 
     ms = _store.get_or_create(key)
 
@@ -887,15 +892,32 @@ def main():
     mode = "DRY RUN" if cfg.DRY_RUN else "LIVE"
     print(f"Starting trade bot [{mode}] — {len(matches)} match(es)")
 
+    _tick_errors: dict = {}   # event_ticker -> consecutive error count
+    MAX_CONSECUTIVE_ERRORS = 10
+
     try:
         while True:
             for mc in list(matches):
-                _heartbeat(mc["event_ticker"])
-                if _stop_requested(mc["event_ticker"]):
-                    print(f"[stop] {mc['event_ticker']}: stop requested from monitor — exiting")
+                event_ticker = mc["event_ticker"]
+                _heartbeat(event_ticker)
+                if _stop_requested(event_ticker):
+                    print(f"[stop] {event_ticker}: stop requested from monitor — exiting")
                     return  # finally block handles liquidation
-                if _tick(mc) == "dead":
-                    _release(mc["event_ticker"])
+                try:
+                    result = _tick(mc)
+                    _tick_errors[event_ticker] = 0   # reset on clean tick
+                except Exception:
+                    n = _tick_errors.get(event_ticker, 0) + 1
+                    _tick_errors[event_ticker] = n
+                    print(f"[error] {event_ticker}: tick #{n} crashed —\n"
+                          f"{traceback.format_exc()}")
+                    if n >= MAX_CONSECUTIVE_ERRORS:
+                        print(f"[stop] {event_ticker}: {n} consecutive errors — giving up")
+                        result = "dead"
+                    else:
+                        continue
+                if result == "dead":
+                    _release(event_ticker)
                     matches.remove(mc)
             if not matches:
                 print("[exit] no active matches remaining — shutting down")
